@@ -77,8 +77,8 @@ function formatDuration(seconds: number): string {
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
 // Temporarily exclude AI-CONV to balance group sizes
-// const GROUPS: GroupKey[] = ["AI-DIV"];
-const GROUPS: GroupKey[] = ["AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
+const GROUPS: GroupKey[] = ["SELF-DIV"];
+// const GROUPS: GroupKey[] = ["AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
 
 // ---- Utilities ----
 const qs = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
