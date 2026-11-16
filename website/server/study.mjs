@@ -42,7 +42,7 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    }
    const test = env.STUDY_MODE === 'test';
    if (!test && !/^[A-Z0-9]{6,16}$/.test(env.PROLIFIC_COMPLETION_CODE || '')) return denied('Study completion is not configured.');
-   if (test ? !equalSecret(body.invite,env.STUDY_INVITE_CODE) : env.STUDY_MODE !== 'prolific' || !await verifyProlific(body,env)) return denied('Please use your authorized study invitation.');
+   if (test ? env.STUDY_TEST_OPEN_ENTRY !== 'true' && !equalSecret(body.invite,env.STUDY_INVITE_CODE) : env.STUDY_MODE !== 'prolific' || !await verifyProlific(body,env)) return denied('Please use your authorized study invitation.');
    const id = randomUUID(), prolificId = test ? `TEST-${randomUUID()}` : body.prolificId;
    const signed = issueSession(id,env);
    const access = env.STUDY_AI_ACCESS || 'both';
@@ -90,12 +90,12 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    }
    if(!slot) return {status:429,data:{error:'The AI request limit has been reached.'}};
    const history = previous.filter(x=>x.response && (session.ai_access==='both'||x.phase===body.phase)).flatMap(x=>[{role:'user',content:x.prompt},{role:'assistant',content:x.response}]);
-   const response = await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${env.OPENAI_API_KEY}`},body:JSON.stringify({model:env.WRITING_MODEL||'gpt-5-mini',store:false,messages:[{role:'system',content:WRITING_PROMPT},...history,{role:'user',content:body.message}]})});
+   const response = await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${env.OPENAI_API_KEY}`},body:JSON.stringify({model:env.WRITING_MODEL||'gpt-6-luna',store:false,reasoning_effort:'low',messages:[{role:'system',content:WRITING_PROMPT},...history,{role:'user',content:body.message}]})});
    if(!response.ok) throw new Error('Writing provider failed');
    const data=await response.json(), content=data.choices?.[0]?.message?.content;
    if(typeof content!=='string'||!content) throw new Error('Empty writing response');
    await rows(env,`ai_requests?session_id=eq.${session.id}&request_number=eq.${slot}`,{method:'PATCH',body:JSON.stringify({response:content})});
-   return ok({content});
+   return ok({content,model:data.model});
   }
   if(body.action==='finish') {
    const quiz=(await rows(env,`recall_generations?session_id=eq.${session.id}&select=story,responses`))[0];

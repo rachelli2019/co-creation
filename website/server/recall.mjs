@@ -30,11 +30,11 @@ export async function generateQuestions(story, env, fetchImpl = fetch) {
   if (!env.OPENAI_API_KEY) throw new Error('Recall generation is not configured');
   const prompt = env.RECALL_PROMPT || RECALL_PROMPT;
   if (!prompt.includes('[STORY]')) throw new Error('Recall prompt must contain [STORY]');
-  const model = env.RECALL_MODEL || 'gpt-4o-mini';
+  const model = env.RECALL_MODEL || 'gpt-6.1-sol';
   const response = await fetchImpl('https://api.openai.com/v1/chat/completions', {
     method: 'POST', signal: AbortSignal.timeout(45000),
     headers: {'Content-Type': 'application/json', Authorization: `Bearer ${env.OPENAI_API_KEY}`},
-    body: JSON.stringify({model, store: false, messages: [
+    body: JSON.stringify({model, store: false, reasoning_effort: 'low', messages: [
       {role: 'system', content: `${RECALL_FORMAT_INSTRUCTIONS}\nCategories: ${RECALL_CATEGORIES.join(', ')}`},
       {role: 'user', content: prompt.replace('[STORY]', () => `<story>\n${story}\n</story>`)},
     ], response_format: {type: 'json_schema', json_schema: {name: 'story_recall', strict: true, schema: questionSchema}}}),
@@ -153,11 +153,15 @@ export async function recallRequest(body, {env = process.env, allowPreview = fal
         return {status: 409, data: {error: 'Recall generation is already pending or has failed. Please contact the researcher.'}};
       }
       if (!claimed.ok) throw new Error('Could not save submitted story');
+      // Start the model only after Supabase confirms the immutable final story.
+      const saved = (await claimed.json())[0];
+      if (!saved || saved.story !== body.story || saved.status !== 'pending') throw new Error('Could not confirm saved story');
+      record = saved;
     }
     try {
       const result = preview && env.RECALL_PREVIEW_LIVE !== 'true'
         ? {questions: mockQuestions(), model: 'simulated', prompt: RECALL_PROMPT, promptVersion: RECALL_PROMPT_VERSION}
-        : await generate(body.story, env);
+        : await generate(record.story, env);
       record = {...record, ...result, simulated: result.model === 'simulated', status: 'ready'};
       if (preview) {
         // Preview data is ephemeral and bounded; production uses the database.

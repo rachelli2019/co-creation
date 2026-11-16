@@ -2227,6 +2227,8 @@ const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}
         if (!recallStarted.current) {
           recallStarted.current = true;
           setRecall({status: 'loading'});
+          // The backend saves the final story before calling the model.
+          // Do not await generation here: participants complete the survey in parallel.
           void recallApi({action: 'generate', story: t || (localPreview && skip ? 'Local layout preview story.' : ''), preview: localPreview, sessionId})
             .then(data => setRecall({status: 'ready', data}))
             .catch(error => setRecall({status: 'error', message: error instanceof Error ? error.message : 'Unable to prepare story questions.'}));

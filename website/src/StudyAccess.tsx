@@ -22,7 +22,7 @@ export default function StudyAccess({children,walkthrough}:{children:ReactNode;w
  const prolific=new URLSearchParams(window.location.search).has('SESSION_ID');
  useEffect(()=>{startStudy().then(result=>{setTestSession(result.testSession);setIsWalkthrough(result.walkthrough === true);setReady(true);}).catch(e=>setError(e.message)).finally(()=>setBusy(false));},[]);
  if(ready && isWalkthrough)return walkthrough;
- if(ready)return <>{testSession && <div className="bg-amber-50 p-2 text-center text-sm">Researcher test session — not a paid Prolific submission.</div>}{children}</>;
+ if(ready)return <>{testSession && <div className="bg-amber-50 p-2 text-center text-sm">Researcher test session — real AI replies and data storage. Not a paid Prolific submission.</div>}{children}</>;
  return <main className="min-h-screen bg-gray-50 flex items-center justify-center p-6"><div className="bg-white border rounded-xl p-8 max-w-md w-full">
   <h1 className="text-xl font-semibold mb-4">Writing study</h1>
   {busy?<p>Checking study access…</p>:<><p role="alert" className="mb-4">{error}</p>{!prolific&&<form onSubmit={async e=>{e.preventDefault();setBusy(true);try{const result=await startStudy(code);setTestSession(result.testSession);setIsWalkthrough(result.walkthrough === true);setReady(true);}catch(e){setError(e instanceof Error?e.message:'Unable to enter.');}finally{setBusy(false);}}}>

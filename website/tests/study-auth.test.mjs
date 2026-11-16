@@ -52,3 +52,20 @@ test('hosted walkthrough opens without an invitation and never contacts storage 
   assert.equal((await dispatch('/api/recall',{action:'generate',preview:true},{headers:{host:'study.example'}},config)).status,403);
  }finally{globalThis.fetch=original;}
 });
+
+
+test('open test entry creates labelled sessions but cannot bypass Prolific verification',async()=>{
+ const original=globalThis.fetch;
+ const records=[];
+ globalThis.fetch=async(url,options)=>{records.push({url,body:JSON.parse(options.body)});return Response.json([]);};
+ try {
+  const settings={...env,STUDY_MODE:'test',STUDY_ENROLLMENT_OPEN:'true',STUDY_AI_ACCESS:'both'};
+  assert.equal((await studyRequest({action:'start'},{env:settings})).status,403);
+  const result=await studyRequest({action:'start'},{env:{...settings,STUDY_TEST_OPEN_ENTRY:'true'}});
+  assert.equal(result.status,200);assert.equal(result.data.testSession,true);assert.equal(result.data.aiAccess,'both');
+  assert.equal(records.length,2);assert.equal(records[1].body.test_session,true);
+  assert.ok(records[1].body.prolific_id.startsWith('TEST-'));
+  assert.equal((await studyRequest({action:'start'},{env:{...settings,STUDY_MODE:'prolific',STUDY_TEST_OPEN_ENTRY:'true',PROLIFIC_COMPLETION_CODE:'TESTCODE'}})).status,403);
+  assert.equal(records.length,2);
+ } finally {globalThis.fetch=original;}
+});

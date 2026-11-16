@@ -98,3 +98,45 @@ test('rough draft and survey save independently with immutable retry semantics',
   assert.equal(records.size, 2);
   assert.equal(records.get('survey').payload.answers.credit, 0);
 });
+
+
+test('final story is saved before generation, and survey can save while generation is pending',async(t)=>{
+ const sessionId='22222222-2222-4222-8222-222222222222';
+ let record,survey,release;
+ const pending=new Promise(resolve=>{release=resolve;});
+ let started;
+ const modelStarted=new Promise(resolve=>{started=resolve;});
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(url.includes('/sessions?'))return Response.json([{id:sessionId}]);
+  if(url.includes('/study_records?')){survey=JSON.parse(options.body);return Response.json([survey]);}
+  if(options.method==='POST'){
+   if(record)return new Response(null,{status:409});
+   record=JSON.parse(options.body);return Response.json([record],{status:201});
+  }
+  if(options.method==='PATCH')record={...record,...JSON.parse(options.body)};
+  return Response.json([record]);
+ });
+ let calls=0;
+ const settings={env:{SUPABASE_URL:'https://example.invalid',SUPABASE_SERVICE_ROLE_KEY:'test'},generate:async(story)=>{
+  calls++;assert.equal(record.status,'pending');assert.equal(record.story,story);started();await pending;
+  return {questions,model:'test-model',prompt:'Test',promptVersion:'1'};
+ }};
+ const body={action:'generate',sessionId,story:'The immutable final story.'};
+ const generation=recallRequest(body,settings);
+ await modelStarted;
+ try {
+  const submitted=await recallRequest({action:'save_record',kind:'survey',sessionId,payload:{answers:{credit:50},submittedAt:new Date().toISOString()}},settings);
+  assert.equal(submitted.status,200);assert.equal(survey.payload.answers.credit,50);
+  assert.equal(record.status,'pending');
+  assert.equal((await recallRequest(body,settings)).status,409);assert.equal(calls,1);
+ } finally {release();}
+ assert.equal((await generation).status,200);assert.equal(record.status,'ready');
+});
+
+test('failed final-story save never calls the quiz model',async(t)=>{
+ t.mock.method(globalThis,'fetch',async(url)=>url.includes('/sessions?')?Response.json([{id:'test'}]):new Response(null,{status:503}));
+ t.mock.method(console,'error',()=>{});
+ let calls=0;
+ const result=await recallRequest({action:'generate',sessionId:'33333333-3333-4333-8333-333333333333',story:'Final story'}, {env:{SUPABASE_URL:'https://example.invalid',SUPABASE_SERVICE_ROLE_KEY:'test'},generate:async()=>{calls++;}});
+ assert.equal(result.status,503);assert.equal(calls,0);
+});
