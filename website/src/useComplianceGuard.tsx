@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 type Options = {
+  disabled?: boolean;
   requireFullscreen?: boolean;     // default true (enforce fullscreen)
   enableWakeLock?: boolean;        // best-effort
   onViolation?: (count: number) => void;
@@ -9,6 +10,7 @@ type Options = {
 };
 
 export function useComplianceGuard(opts: Options = {}) {
+  const disabled = opts.disabled ?? false;
   const requireFullscreen = opts.requireFullscreen ?? true;
   const [needsAttention, setNeedsAttention] = useState(false);
   const [violations, setViolations] = useState(opts.initialViolations ?? 0);
@@ -17,11 +19,12 @@ export function useComplianceGuard(opts: Options = {}) {
   const suppressedRef = useRef(false); // dev override
 
   const isCompliant = useCallback(() => {
+    if (disabled) return true;
     const visible = document.visibilityState === "visible";
     const focused = document.hasFocus();
     const fsOk = !requireFullscreen || !!document.fullscreenElement;
     return visible && focused && fsOk;
-  }, [requireFullscreen]);
+  }, [requireFullscreen, disabled]);
 
   const flagViolation = useCallback(() => {
     if (suppressedRef.current) return;
@@ -84,6 +87,7 @@ export function useComplianceGuard(opts: Options = {}) {
   }, [isCompliant, opts, requestFullscreen, requestWakeLock]);
 
   useEffect(() => {
+    if (disabled) return;
     // Developer escape: Ctrl+Shift+E ×5 (within 2s)
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && (e.code === "KeyE")) {
@@ -127,7 +131,7 @@ export function useComplianceGuard(opts: Options = {}) {
       clearInterval(poll);
       releaseWakeLock();
     };
-  }, [checkNow, flagViolation, isCompliant, opts, releaseWakeLock, requestWakeLock]);
+  }, [disabled, checkNow, flagViolation, isCompliant, opts, releaseWakeLock, requestWakeLock]);
 
   return { needsAttention, violations, resume };
 }

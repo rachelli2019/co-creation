@@ -197,6 +197,7 @@ async function banParticipant(prolificId: string) {
 // startSession: generate a UUID locally and DO NOT .select()
 async function startSession(prolificId: string) {
   const sessionId = crypto.randomUUID(); // avoids SELECT after INSERT
+  if (!supabase) throw new Error('Database is not configured');
   const { error } = await supabase
     .from('sessions')
     .insert({ id: sessionId, prolific_id: prolificId });

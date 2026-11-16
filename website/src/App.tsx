@@ -1,7 +1,16 @@
+import { previewBrainstorm, outlineText } from './previewBrainstorm';
 import React, { useEffect, useRef, useState } from "react";
 import { ComplianceGate } from "./ComplianceGate";
 import { useWritingAttention } from "./useWritingAttention"; 
-import { supabase } from './lib/supabase';
+import { usePageThrough, previewEnabled } from './previewMode';
+import PostTaskSurvey from './PostTaskSurvey';
+import { recallApi } from './recallApi';
+import type { RecallState, PostTaskResponse } from './PostTaskSurvey';
+import { studyApi } from './studyApi';
+import { startStudy } from './StudyAccess';
+import { PHASE_SECONDS, aiEnabled, parseAIAccess, accessLabels } from './writingConfig';
+import type { AIAccess, WritingPhase } from './writingConfig';
+const STUDY_AI_ACCESS = parseAIAccess(import.meta.env.VITE_WRITING_AI_ACCESS);
 
 
 /*
@@ -24,177 +33,53 @@ import { supabase } from './lib/supabase';
   Group keys: "AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"
 */
 
-// Development mode - set to true to disable all timers for faster development
-const DEV_MODE = true;
+// Short timers are opt-in and cannot be enabled in production builds.
+const DEV_MODE = import.meta.env.DEV && import.meta.env.VITE_FAST_PREVIEW === 'true';
 
 type GroupKey = "AI-DIV" | "AI-CONV" | "SELF-DIV" | "SELF-CONV";
 
 // Temporarily exclude AI-CONV to balance group sizes
-const GROUPS: GroupKey[] = ["AI-DIV"];
+
 // const GROUPS: GroupKey[] = ["AI-DIV", "AI-CONV", "SELF-DIV", "SELF-CONV"]; // Full randomization
 
 // ---- Utilities ----
-const qs = new URLSearchParams(typeof window !== "undefined" ? window.location.search : "");
-const getProlificIdFromURL = () => qs.get("PROLIFIC_PID") || qs.get("prolific_id") || qs.get("pid") || "ANON";
+
+
 
 const todayISO = () => new Date().toISOString();
 
-// ---- Supabase Integration ----
-// Call once per participant (idempotent-ish)
-// async function ensureParticipant(prolificId: string, group_key: string) {
-//   try {
-//     if (!supabase || !supabase.from) {
-//       console.warn('Supabase client not available, skipping participant creation');
-//       return;
-//     }
-//     await supabase.from('participants').insert({ prolific_id: prolificId, group_key });
-//   } catch (error) {
-//     console.warn('Failed to create participant:', error);
-//   }
-// }
-
-// ensureParticipant: use UPSERT so repeated visits don't fail
-async function ensureParticipant(prolificId: string, group_key: string) {
-  try {
-    if (!supabase || !supabase.from) {
-      console.warn('Supabase client not available, skipping participant creation');
-      return;
-    }
-    
-    // Check if participant already exists
-    const { data: existing, error: checkError } = await supabase
-      .from('participants')
-      .select('prolific_id')
-      .eq('prolific_id', prolificId)
-      .single();
-
-    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = no rows returned
-      console.error('Error checking participant:', checkError);
-      return;
-    }
-
-    if (existing) {
-      console.log('participants already exists, skipping insert');
-      return;
-    }
-
-    // Only insert if participant doesn't exist
-    const { error } = await supabase
-      .from('participants')
-      .insert({ prolific_id: prolificId, group_key, is_banned: false });
-
-    if (error) {
-      console.log('participants insert:', error.message);
-    } else {
-      console.log('participants insert: OK');
-    }
-  } catch (error) {
-    console.warn('Failed to create participant:', error);
-  }
+// Database access is server-only; participants never receive database credentials.
+async function banParticipant(_prolificId: string) {
+  await studyApi({action: 'ban'});
 }
-
-// Ban a participant
-async function banParticipant(prolificId: string) {
-  try {
-    if (!supabase || !supabase.from) {
-      console.warn('Supabase client not available, cannot ban participant');
-      return;
-    }
-
-    console.log('🚫 Attempting to ban participant:', prolificId);
-
-    const { data, error, count } = await supabase
-      .from('participants')
-      .update({ is_banned: true })
-      .eq('prolific_id', prolificId)
-      .select();
-
-    console.log('Ban result:', { 
-      data, 
-      error, 
-      count,
-      errorCode: error?.code,
-      errorMessage: error?.message,
-      errorDetails: error?.details,
-      errorHint: error?.hint
-    });
-
-    if (error) {
-      console.error('❌ Failed to ban participant:', error);
-      console.error('Error details:', JSON.stringify(error, null, 2));
-    } else {
-      console.log('✅ Participant banned successfully:', prolificId);
-      console.log('Updated rows:', data);
-    }
-  } catch (error) {
-    console.error('❌ Exception banning participant:', error);
-  }
-}
-
-
-// Start a session (get session_id)
-// async function startSession(prolificId: string) {
-//   if (!supabase || !supabase.from) {
-//     console.warn('Supabase client not available, using mock session ID');
-//     return `mock-session-${Date.now()}`;
-//   }
-//   const { data, error } = await supabase
-//     .from('sessions')
-//     .insert({ prolific_id: prolificId })
-//     .select('id')
-//     .single();
-//   if (error) throw error;
-//   return data.id as string;
-// }
-
-// startSession: generate a UUID locally and DO NOT .select()
-async function startSession(prolificId: string) {
-  const sessionId = crypto.randomUUID(); // avoids SELECT after INSERT
-  const { error } = await supabase
-    .from('sessions')
-    .insert({ id: sessionId, prolific_id: prolificId });
-
-  console.log('sessions insert:', error?.message || 'OK');
-
-  // if (error) {
-  //   console.error('sessions insert failed:', error);
-  //   throw error;
-  // }
-  return sessionId;
-}
-
 
 // ---- Snapshot Tracking System ----
-const snapshotBuffer: any[] = [];
+const snapshotBuffer: {session_id:string;timestamp:string;phase:string;textbox:string;text:string}[] = [];
 let flushTimer: number | undefined;
-
-// Save a text snapshot to the database
+let flushing: Promise<void> | undefined;
+function flushSnapshots(): Promise<void> {
+  if (flushing) return flushing.then(() => flushSnapshots());
+  const batch = snapshotBuffer.splice(0, 5);
+  if (!batch.length) return Promise.resolve();
+  flushing = studyApi({action: 'snapshots', items: batch}).then(() => undefined).catch(error => {
+    snapshotBuffer.unshift(...batch);
+    throw error;
+  }).finally(() => {flushing = undefined;});
+  return flushing.then(() => snapshotBuffer.length ? flushSnapshots() : undefined);
+}
+function scheduleSnapshots() {
+  if (flushTimer) return;
+  flushTimer = window.setTimeout(() => {
+    flushTimer = undefined;
+    void flushSnapshots().catch(() => {
+      // Keep failed snapshots in memory and retry while the study stays open.
+      flushTimer = window.setTimeout(() => {flushTimer = undefined; scheduleSnapshots();}, 5000);
+    });
+  }, 1000);
+}
 function saveSnapshot(session_id: string, phase: 'brainstorm'|'writing', textbox: 'main'|'chat', text: string) {
-  snapshotBuffer.push({
-    session_id,
-    timestamp: new Date().toISOString(),
-    phase,
-    textbox,
-    text
-  });
-  
-  // Batch flush snapshots
-  if (!flushTimer) {
-    flushTimer = window.setTimeout(async () => {
-      const batch = snapshotBuffer.splice(0, snapshotBuffer.length);
-      flushTimer = undefined;
-      if (batch.length && supabase && supabase.from) {
-        try {
-          await supabase.from('snapshots').insert(batch);
-          console.log(`💾 Saved ${batch.length} snapshot(s)`);
-        } catch (error) {
-          console.error('Failed to flush snapshots:', error);
-        }
-      } else if (batch.length) {
-        console.log('Snapshots buffered (Supabase not available):', batch.length);
-      }
-    }, 1000);
-  }
+  snapshotBuffer.push({session_id,timestamp:new Date().toISOString(),phase,textbox,text});
+  scheduleSnapshots();
 }
 
 // ---- Placeholder Stats Service (replace with your backend) ----
@@ -237,92 +122,6 @@ class LocalStats {
 
 // ---- Assignment Persistence (placeholder) ----
 // ---- Check participant status and handle re-entry ----
-async function checkParticipantStatus(prolificId: string): Promise<{
-  canProceed: boolean;
-  existingGroup?: GroupKey;
-  reason?: string;
-}> {
-  if (!supabase || !supabase.from) {
-    console.warn('⚠️ Supabase not available, allowing participant');
-    return { canProceed: true };
-  }
-
-  try {
-    // Check if participant exists in database
-    const { data: participant, error: partError } = await supabase
-      .from('participants')
-      .select('prolific_id, group_key, is_banned')
-      .eq('prolific_id', prolificId)
-      .single();
-
-    if (partError && partError.code !== 'PGRST116') { // PGRST116 = no rows returned
-      console.error('Error checking participant:', partError);
-      return { canProceed: true }; // Allow on error
-    }
-
-    if (!participant) {
-      // New participant - can proceed
-      console.log('✨ New participant');
-      return { canProceed: true };
-    }
-
-    // If participant exists in database, they've already started the experiment
-    // Check if they're banned first
-    if (participant.is_banned) {
-      console.log('🚫 Participant is banned');
-      return {
-        canProceed: false,
-        reason: 'banned',
-        existingGroup: participant.group_key
-      };
-    }
-
-    // Participant exists but is not banned - they started and quit the session
-    console.log('🚫 Participant exists in database - already started and quit session');
-    return {
-      canProceed: false,
-      reason: 'already_started',
-      existingGroup: participant.group_key
-    };
-
-  } catch (err) {
-    console.error('Error in checkParticipantStatus:', err);
-    return { canProceed: true }; // Allow on error
-  }
-}
-
-
-// ---- Simple random group assignment (no balancing) ----
-async function assignSimpleRandom(prolificId: string): Promise<GroupKey> {
-  
-  // 1) Check participant status
-  const status = await checkParticipantStatus(prolificId);
-  
-  if (!status.canProceed) {
-    throw new Error(status.reason || 'cannot_proceed');
-  }
-  
-  // Special case: TEST participant always gets AI-CONV
-  if (prolificId.includes('TEST')) {
-    console.log('🧪 TEST participant detected - assigning to AI-CONV');
-    return 'AI-CONV';
-  }
-
-  // Strictly speaking we won't ever use this, because participants who are already assigned will not be able to re-enter the study.
-  // If participant exists with a group, reuse it
-  if (status.existingGroup) {
-    console.log(`📌 Reusing existing group assignment for ${prolificId}:`, status.existingGroup);
-    return status.existingGroup;
-  }
-
-  // 2) New participant - randomly assign to one of the four groups
-  const chosen = GROUPS[Math.floor(Math.random() * GROUPS.length)];
-  
-  console.log(`✨ Randomly assigned ${prolificId} to group: ${chosen}`);
-
-  return chosen;
-}
-
 // ---- Study Flow State ----
 
 type Step = 1 | 2 | 3 | 4 | 5; // 1=Instructions, 2=Brainstorm, 3=Editor, 4=Survey
@@ -331,14 +130,19 @@ interface SessionMeta {
   prolificId: string;
   group: GroupKey;
   startedAt: string;
+  aiAccess?: AIAccess;
+  testSession?: boolean;
+  localPreview?: boolean;
 }
 
 // ---- Shared Containers ----
-const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React.ReactNode }>=({ title, children, footer }) => (
+const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React.ReactNode; onPreviewNext?: () => void }>=({ title, children, footer, onPreviewNext }) => {
+  const skip = usePageThrough();
+  return (
   <div className="min-h-screen bg-gray-50 text-gray-900">
     {DEV_MODE && (
       <div className="bg-red-100 border-b-2 border-red-500 text-red-700 px-4 py-2 text-center font-semibold">
-        🚧 DEVELOPMENT MODE - All timers disabled
+        🚧 DEVELOPMENT MODE - Shortened timers
       </div>
     )}
     <div className="max-w-5xl mx-auto px-4 py-6">
@@ -346,13 +150,16 @@ const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React
         <h1 className="text-2xl font-bold">{title}</h1>
       </header>
       <main className="bg-white rounded-2xl shadow p-6">{children}</main>
+      {skip && onPreviewNext && <div className="mt-4"><button className="px-4 py-2 border border-amber-500 rounded-lg bg-amber-50" onClick={onPreviewNext}>Preview: next screen</button></div>}
       {footer && <footer className="mt-6 flex justify-end">{footer}</footer>}
     </div>
   </div>
 );
+};
 
 // ---- View 1: Instructions ----
 const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null; onNext: () => void }>=({ meta, sessionId, onNext }) => {
+  const skip = usePageThrough();
   const [ack, setAck] = useState(false);
   const [showAICheck, setShowAICheck] = useState(false);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
@@ -365,11 +172,11 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
 
   // Timer effect
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
+    if (!skip && !DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => setTimeRemaining(prev => prev - 1), 1000);
       return () => clearTimeout(timer);
     }
-  }, [timeRemaining]);
+  }, [timeRemaining, skip]);
 
   const handleNext = async () => {
     if (timeRemaining > 0) return;
@@ -392,7 +199,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
         }
       } else {
         // Failed all attempts - ban participant
-        await banParticipant(meta.prolificId);
+        if (!meta.localPreview) await banParticipant(meta.prolificId);
         setShowFinalError(true);
       }
     }
@@ -400,6 +207,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
 
   return (
     <Shell
+      onPreviewNext={() => showAICheck ? onNext() : setShowAICheck(true)}
       title="Instructions"
       footer={
         showFinalError ? null : (
@@ -435,8 +243,8 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
         )}
         <p className="leading-relaxed">
           Welcome! You'll complete a short creative writing task for a research study. {meta.group.includes("SELF") ? 
-            "Our goal is to understand how people write stories without the use of AI, in particular how people brainstorm, write first drafts, and refine their stories." 
-            : "Our goal is to understand how people write stories with the use of AI, in particular how it might contribute to less diverse stories."
+            "Our goal is to understand how people write stories without the use of an AI writing assistant, in particular how people brainstorm, write first drafts, and refine their stories."
+            : "Our goal is to understand how people write stories with the use of an AI writing assistant, in particular how it might contribute to less diverse stories."
           } Please read the instructions carefully.
         </p>
         
@@ -449,7 +257,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
             {meta.group.includes("SELF") ? (
               <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final submission. <span className="font-bold text-red-500">If you are caught using AI, we will return your submission.</span></li>
             ) : (
-              <li>You are provided an in-app AI tool to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI tool when prompted.</span> However, oftentimes the AI tool will not achieve the quality you desire. We encourage you to use the AI tool as a stepping stone and as a helper, but <span className="font-bold">ultimately you are responsible for your own story.</span> Please do not use external AI tools that we do not provide to you.</li>
+              <li>You are provided an in-app AI writing assistant to aid in your creative writing task; in fact you are <span className="font-bold">required to use the AI writing assistant when prompted.</span> However, oftentimes the AI writing assistant will not achieve the quality you desire. We encourage you to use the AI writing assistant as a stepping stone and as a helper, but <span className="font-bold">ultimately you are responsible for your own story.</span> Please do not use external AI tools that we do not provide to you.</li>
             )}
           </ul>
         </div>
@@ -520,7 +328,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
                     Unfortunately, we cannot proceed with the study if participants do not understand the key requirements.
                   </p>
                   <p className="text-red-600 mt-3">
-                    Please <a href="https://app.prolific.com/submissions/complete?cc=C246RY97" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C246RY97</span>.
+                    Please <a href="https://app.prolific.com/submissions" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study.
                   </p>
                 </div>
               )}
@@ -534,6 +342,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
 
 // ---- View 2: Brainstorm ----
 const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void; sessionId?: string | null }>=({ onNext, meta, value, setValue, sessionId }) => {
+  const skip = usePageThrough();
   const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 300); // 5 minutes in seconds
   const [showConfirmation, setShowConfirmation] = React.useState(false);
   const [showReminder, setShowReminder] = React.useState<false | '2min' | '30sec'>(false);
@@ -554,7 +363,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
 
   // Timer countdown effect
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
+    if (!skip && !DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => {
         setTimeRemaining(prev => {
           const newTime = prev - 1;
@@ -571,13 +380,14 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [timeRemaining]); // Only depend on timeRemaining
+  }, [timeRemaining, skip]); // Only depend on timeRemaining
   
   // Auto-advance when timer expires
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining === 0) {
+    if (!skip && !DEV_MODE && timeRemaining === 0) {
       // Save brainstorm data when time runs out
       const brainstormData = JSON.stringify({
+        quick_ideas,
         main_char,
         setting,
         conflict,
@@ -587,7 +397,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
       setValue(brainstormData);
       onNext(); // Force proceed when time is up (only in production)
     }
-  }, [timeRemaining]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [timeRemaining, skip]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refs to track current brainstorm values without triggering re-renders
   const brainstormRefs = React.useRef({
@@ -659,6 +469,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
     
     // Compile brainstorm data as JSON
     const brainstormData = JSON.stringify({
+      quick_ideas,
       main_char,
       setting,
       conflict,
@@ -672,6 +483,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
   return (
     <Shell
       title="Step 1 · Brainstorm"
+      onPreviewNext={() => {setValue(JSON.stringify({quick_ideas, main_char, setting, conflict, resolution, plot})); onNext();}}
       footer={
         <div className="flex flex-col items-center gap-4">
           {showReminder && (
@@ -689,6 +501,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
                   onClick={() => {
                     // Compile brainstorm data as JSON
                     const brainstormData = JSON.stringify({
+                      quick_ideas,
                       main_char,
                       setting,
                       conflict,
@@ -781,7 +594,7 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
       <textarea
 value={quick_ideas}
 onChange={(e) => set_quick_ideas(e.target.value)}
-onPaste={(e) => e.preventDefault()}
+
 rows={3}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Jot down as many ideas for a story you have."
@@ -800,7 +613,7 @@ Additionally, what is your character's goal in the story? What do they want?</p>
 <textarea
 value={main_char}
 onChange={(e) => set_main_char(e.target.value)}
-onPaste={(e) => e.preventDefault()}
+
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Who is your main character?"
@@ -814,7 +627,7 @@ story occur over (1 year? 1 day? 20 minutes?)</p>
 <textarea
 value={setting}
 onChange={(e) => set_setting(e.target.value)}
-onPaste={(e) => e.preventDefault()}
+
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Where and when does the story take place?"
@@ -828,7 +641,7 @@ prevent the character from getting what they want? </p>
 <textarea
 value={conflict}
 onChange={(e) => set_conflict(e.target.value)}
-onPaste={(e) => e.preventDefault()}
+
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="What problem drives the story?"
@@ -841,7 +654,7 @@ placeholder="What problem drives the story?"
 <textarea
 value={resolution}
 onChange={(e) => set_resolution(e.target.value)}
-onPaste={(e) => e.preventDefault()}
+
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="How is the conflict resolved?"
@@ -855,7 +668,7 @@ get from beginning to end? What happens? How is the resolution reached?</p>
 <textarea
 value={plot}
 onChange={(e) => set_plot(e.target.value)}
-onPaste={(e) => e.preventDefault()}
+
 rows={3}
 className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
 placeholder="Summarize the main events or structure."
@@ -871,6 +684,7 @@ placeholder="Summarize the main events or structure."
 // ---- New View: Prompt ----
 const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta, onNext }) => {
   const isDiv = meta.group.includes("DIV");
+  const skip = usePageThrough();
   const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 20);
   const [showAttentionCheck, setShowAttentionCheck] = React.useState(false);
   const [selectedOption, setSelectedOption] = React.useState<string | null>(null);
@@ -878,11 +692,11 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
   const correctAnswer = isDiv ? "originality" : "grade";
 
   React.useEffect(() => {
-    if (!DEV_MODE && timeRemaining > 0) {
+    if (!skip && !DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => setTimeRemaining(prev => prev - 1), 1000);
       return () => clearTimeout(timer);
     }
-  }, [timeRemaining]);
+  }, [timeRemaining, skip]);
 
   const handleProceed = async () => {
     if (timeRemaining > 0) return;
@@ -895,7 +709,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         onNext();
       } else {
         // Failed attention check - ban participant
-        await banParticipant(meta.prolificId);
+        if (!meta.localPreview) await banParticipant(meta.prolificId);
         setShowWarning(true);
       }
     }
@@ -933,7 +747,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After multiple periods of inactivity, we will flag your submission for manual review.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have 10 minutes for a rough draft and 10 minutes for a final draft. Your rough draft carries into the final section. AI writing assistant access: {accessLabels[meta.group.startsWith("AI") ? (meta.aiAccess ?? STUDY_AI_ACCESS) : "neither"]}. You do not need to use the entire allotted time. After multiple periods of inactivity, we will flag your submission for manual review.
         </p>
       </>
     )
@@ -1023,7 +837,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have at most 20 minutes to write your story. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have 10 minutes for a rough draft and 10 minutes for a final draft. Your rough draft carries into the final section. AI writing assistant access: {accessLabels[meta.group.startsWith("AI") ? (meta.aiAccess ?? STUDY_AI_ACCESS) : "neither"]}. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
         </p>
         
       </>
@@ -1032,6 +846,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
   return (
     <Shell
       title="Prompt"
+      onPreviewNext={() => showAttentionCheck ? onNext() : setShowAttentionCheck(true)}
       footer={
         <div className="flex flex-col items-center gap-4">
           {showWarning ? (
@@ -1046,7 +861,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
                   Unfortunately, we cannot proceed with the study. You have been removed from participation.
                 </p>
                 <p className="text-red-600 mt-3">
-                  Please <a href="https://app.prolific.com/submissions/complete?cc=C246RY97" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C246RY97</span>.
+                  Please <a href="https://app.prolific.com/submissions" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study.
                 </p>
               </div>
             </div>
@@ -1119,10 +934,34 @@ const AIChatPanel: React.FC<{
   setDraft: (s:string)=>void,
   isLoading?: boolean,
   queryCount?: number,
-  maxQueries?: number
-}>=({ messages, onSend, draft, setDraft, isLoading = false, queryCount = 0, maxQueries = 15 })=>{
+  maxQueries?: number;
+  onUseText: (text: string) => void;
+}>=({ messages, onSend, draft, setDraft, isLoading = false, queryCount = 0, maxQueries = 15, onUseText })=>{
   const chatContainerRef = useRef<HTMLDivElement>(null);
-  const [showConfirmSend, setShowConfirmSend] = useState(false);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    const input = promptRef.current;
+    if (!input) return;
+    input.style.height = 'auto';
+    input.style.height = `${input.scrollHeight}px`;
+  }, [draft]);
+
+  useEffect(() => {
+    const input = promptRef.current;
+    if (!input) return;
+    let previousWidth = input.getBoundingClientRect().width;
+    const observer = new ResizeObserver(() => {
+      const width = input.getBoundingClientRect().width;
+      if (width === previousWidth) return;
+      previousWidth = width;
+      input.style.height = 'auto';
+      input.style.height = `${input.scrollHeight}px`;
+    });
+    observer.observe(input);
+    return () => observer.disconnect();
+  }, []);
+
   
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -1132,50 +971,35 @@ const AIChatPanel: React.FC<{
   }, [messages, isLoading]);
   
   const handleSendClick = () => {
-    if (draft.trim()) {
-      setShowConfirmSend(true);
-    }
-  };
-  
-  const confirmSend = () => {
-    if (draft.trim()) {
+    if (draft.trim() && !isLoading && queryCount < maxQueries) {
       onSend(draft.trim());
       setDraft("");
     }
-    setShowConfirmSend(false);
   };
-  
-  const cancelSend = () => {
-    setShowConfirmSend(false);
-  };
-  
-  const queriesRemaining = maxQueries - queryCount;
+
   const isLimitReached = queryCount >= maxQueries;
   
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 flex flex-col">
       <div className="flex items-center justify-between mb-2">
-        <div className="font-semibold">AI Assistant</div>
-        <div className={`text-xs font-medium ${
-          queriesRemaining <= 3 ? 'text-red-600' : 
-          queriesRemaining <= 5 ? 'text-orange-600' : 
-          'text-gray-600'
-        }`}>
-          {queriesRemaining} {queriesRemaining === 1 ? 'query' : 'queries'} remaining
-        </div>
+        <div className="font-semibold">AI writing assistant</div>
       </div>
-      <div ref={chatContainerRef} className="border rounded-xl p-3 overflow-y-auto space-y-3 max-h-[800px]">
+      <div ref={chatContainerRef} className="flex-1 min-h-20 px-1 py-3 overflow-y-auto space-y-5">
         {messages.length===0 && (
-          <div className="text-sm text-gray-500">Ask the AI for a first draft or to edit.</div>
+          <div className="flex flex-col items-center justify-center px-3 py-5 text-center">
+            <p className="text-lg font-medium text-gray-700">Let’s work on your story.</p>
+            <p className="mt-1 max-w-sm text-sm leading-5 text-gray-500">Ask for ideas, a first draft, or help revising.</p>
+          </div>
         )}
         {messages.map((m, i)=> (
-          <div key={i} className={"p-2 rounded-lg " + (m.role==="assistant"?"bg-gray-100":"bg-gray-50 border")}> 
+          <div key={i} className={"p-3 text-sm leading-relaxed break-words " + (m.role==="assistant"?"mr-3 rounded-2xl border border-blue-100 bg-blue-50":"ml-6 rounded-2xl bg-gray-100")}>
             <div className="text-xs uppercase tracking-wide opacity-60">{m.role}</div>
             <div className="whitespace-pre-wrap">{m.content}</div>
+            {m.role === 'assistant' && <button className="mt-3 text-sm border border-blue-200 rounded-lg px-3 py-1" onClick={() => onUseText(m.content)}>Add to draft</button>}
           </div>
         ))}
         {isLoading && (
-          <div className="p-2 rounded-lg bg-gray-100">
+          <div className="mr-3 rounded-2xl border border-blue-100 bg-blue-50 p-3">
             <div className="text-xs uppercase tracking-wide opacity-60">assistant</div>
             <div className="flex items-center gap-2 text-gray-600">
               <div className="flex gap-1">
@@ -1183,7 +1007,7 @@ const AIChatPanel: React.FC<{
                 <span className="animate-bounce" style={{ animationDelay: '150ms' }}>●</span>
                 <span className="animate-bounce" style={{ animationDelay: '300ms' }}>●</span>
       </div>
-              <span className="text-sm">AI is thinking...</span>
+              <span className="text-sm">The AI writing assistant is thinking...</span>
             </div>
           </div>
         )}
@@ -1191,59 +1015,41 @@ const AIChatPanel: React.FC<{
           <div className="p-3 rounded-lg bg-red-50 border border-red-200">
             <div className="text-sm font-semibold text-red-800 mb-1">Query Limit Reached</div>
             <div className="text-sm text-red-700">
-              You've used all {maxQueries} AI queries for this session. You can continue writing and editing your story in the main editor.
+              You've used all {maxQueries} queries to the AI writing assistant for this session. You can continue writing and editing your story in the main editor.
             </div>
           </div>
         )}
       </div>
       
-      {/* Confirmation dialog */}
-      {showConfirmSend && (
-        <div className="mt-2 p-3 bg-yellow-50 border border-yellow-300 rounded-lg">
-          <p className="text-sm font-semibold text-yellow-900 mb-2">Are you sure you want to send this prompt to the AI?</p>
-          <div className="flex gap-2">
-            <button 
-              className="px-3 py-1 rounded-lg bg-black text-white text-sm"
-              onClick={confirmSend}
-            >
-              Yes, send
-            </button>
-            <button 
-              className="px-3 py-1 rounded-lg border border-gray-300 text-gray-700 text-sm"
-              onClick={cancelSend}
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-      
-      <div className="mt-3 flex gap-2">
+      <div className="relative mt-3 shrink-0 rounded-3xl border border-gray-300 bg-gray-50 p-3 shadow-sm focus-within:border-gray-500 focus-within:ring-1 focus-within:ring-gray-300">
         <textarea
-          className="flex-1 border rounded-xl p-2 resize-y min-h-[60px] max-h-[300px]"
-          placeholder={isLimitReached ? "Query limit reached" : "Type a message… (press Enter for new line)"}
+          ref={promptRef}
+          className="block w-full resize-none overflow-y-auto bg-transparent pl-1 pr-12 py-2 text-sm leading-6 outline-none min-h-10 max-h-[min(240px,35vh)]"
+          id="ai-prompt"
+          aria-label="Message the AI writing assistant"
+          placeholder={isLimitReached ? "Query limit reached" : "Message the AI writing assistant…"}
           value={draft}
           onChange={(e)=>setDraft(e.target.value)}
-          rows={3}
+          rows={1}
           disabled={isLoading || isLimitReached}
         />
-        <button 
-          className={`px-3 py-2 rounded-xl ${
-            !draft.trim() || isLoading || isLimitReached
-              ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
-              : 'bg-black text-white'
-          }`}
-          onClick={handleSendClick}
-          disabled={!draft.trim() || isLoading || isLimitReached}
-          title={isLimitReached ? `Query limit reached (${maxQueries}/${maxQueries})` : ''}
-        >
-          {isLoading ? 'Sending...' : isLimitReached ? 'Limit Reached' : 'Send'}
-        </button>
+        <div className="absolute bottom-3 right-3">
+          <button
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-black text-white disabled:bg-gray-200 disabled:text-gray-400"
+            onClick={handleSendClick}
+            disabled={!draft.trim() || isLoading || isLimitReached}
+            aria-label={isLoading ? 'Sending message' : 'Send'}
+            title={isLimitReached ? `Query limit reached (${maxQueries}/${maxQueries})` : 'Send message'}
+          >
+            {isLoading ? <span className="animate-pulse">…</span> : <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19V5M5 12l7-7 7 7" /></svg>}
+          </button>
+        </div>
       </div>
-      
+      <p className="mt-2 text-xs text-gray-500">Enter starts a new line. Use the arrow to send.</p>
+
       {/* AI Prompting Tips - Collapsible */}
-      <details className="mt-3 p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
-        <summary className="font-semibold cursor-pointer hover:text-gray-900">💡 Tips for prompting the AI (click to expand)</summary>
+      <details className="mt-3 shrink-0 max-h-32 overflow-y-auto p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
+        <summary className="font-semibold cursor-pointer hover:text-gray-900">💡 Tips for prompting the AI writing assistant (click to expand)</summary>
         <ul className="mt-2 space-y-2 text-gray-600">
           <li className="ml-4">
             <div>"In 250-350 words, write a short story with the following elements:</div>
@@ -1261,23 +1067,94 @@ const AIChatPanel: React.FC<{
   );
 };
 
+type ChatMessage = {role: "user" | "assistant"; content: string};
+export interface WritingRecord {
+  roughDraft: string;
+  roughCompletedAt: string;
+  finalCompletedAt: string;
+  aiAccess: AIAccess;
+  phaseSeconds: number;
+  roughTranscript: ChatMessage[];
+  finalTranscript: ChatMessage[];
+}
+export const WritingStudy: React.FC<{
+  meta: SessionMeta; brainstorm: string; sessionId?: string | null;
+  access?: AIAccess; preview?: boolean;
+  onNext: (text: string, messages: ChatMessage[], record: WritingRecord) => void;
+}> = ({meta, brainstorm, sessionId, access = STUDY_AI_ACCESS, preview = false, onNext}) => {
+  const [rough, setRough] = useState<{text: string; messages: ChatMessage[]; completedAt: string} | null>(null);
+  const [roughSaved, setRoughSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [savingRough, setSavingRough] = useState(false);
+  const phase = rough ? 'final' : 'rough';
+  const effectiveAccess = meta.group.startsWith('AI') ? access : 'neither';
+  async function saveRough(artifact: NonNullable<typeof rough>) {
+    setSavingRough(true); setSaveError('');
+    try {
+      await recallApi({action: 'save_record', kind: 'rough_draft', preview, sessionId, payload: {
+        text: artifact.text, transcript: artifact.messages, completedAt: artifact.completedAt,
+        aiAccess: effectiveAccess, phaseSeconds: DEV_MODE ? 30 : PHASE_SECONDS, brainstorm,
+      }});
+      setRoughSaved(true);
+    } catch { setSaveError('Your rough draft could not be saved. Please retry to continue. Your text is kept on this page.'); }
+    finally { setSavingRough(false); }
+  }
+  if (rough && !roughSaved) return <Shell title="Saving your rough draft">
+    {saveError ? <><p role="alert">{saveError}</p><button className="mt-4 border rounded-lg px-4 py-2" disabled={savingRough} onClick={() => saveRough(rough)}>Retry save</button></> : <p role="status">Saving… Your final-draft timer will start when saving is complete.</p>}
+  </Shell>;
+  return <EditorView key={phase} meta={meta} brainstorm={brainstorm} sessionId={sessionId}
+    phase={phase} access={effectiveAccess} preview={preview} initialText={rough?.text ?? ''}
+    initialMessages={effectiveAccess === 'both' ? rough?.messages ?? [] : []}
+    previousQueries={rough?.messages.filter(m => m.role === 'user').length ?? 0}
+    onNext={(text, messages) => {
+      if (!rough) {
+        const artifact = {text, messages, completedAt: todayISO()};
+        setRough(artifact);
+        void saveRough(artifact);
+        window.scrollTo(0, 0);
+      } else {
+        const finalMessages = effectiveAccess === 'both' ? messages.slice(rough.messages.length) : messages;
+        onNext(text, [...rough.messages, ...finalMessages], {
+          roughDraft: rough.text, roughCompletedAt: rough.completedAt, finalCompletedAt: todayISO(),
+          aiAccess: effectiveAccess, phaseSeconds: DEV_MODE ? 30 : PHASE_SECONDS,
+          roughTranscript: rough.messages, finalTranscript: finalMessages,
+        });
+      }
+    }} />;
+};
+
 // ---- View 3: Editor ----
 const EditorView: React.FC<{
   meta: SessionMeta;
   brainstorm: string;
   onNext: (finalText: string, aiTranscript: {role:"user"|"assistant"; content:string}[])=>void;
   sessionId?: string | null;
-}> = ({ meta, brainstorm, onNext, sessionId }) => {
-  const [text, setText] = useState("");
-  const [aiMessages, setAiMessages] = useState<{role:"user"|"assistant"; content:string}[]>([]);
+  phase: WritingPhase;
+  access: AIAccess;
+  preview: boolean;
+  initialText: string;
+  initialMessages: ChatMessage[];
+  previousQueries: number;
+}> = ({ meta, brainstorm, onNext, sessionId, phase, access, preview, initialText, initialMessages, previousQueries }) => {
+  const skip = usePageThrough();
+  const [phaseError, setPhaseError] = useState('');
+  useEffect(() => {
+    if (!preview) void studyApi({action: 'phase', sessionId, phase}).then(result => setDeadline(Date.parse(result.startedAt) + 600000)).catch(error => setPhaseError(error.message));
+  }, [preview, sessionId, phase]);
+  const [text, setText] = useState(initialText);
+  const isAI = aiEnabled(meta.group, access, phase);
+  const requestController = useRef<AbortController | null>(null);
+  useEffect(() => () => requestController.current?.abort(), []);
+  const [aiMessages, setAiMessages] = useState<ChatMessage[]>(initialMessages);
   const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
   const [isAILoading, setIsAILoading] = useState(false); // Track if AI is responding
-  const [aiQueryCount, setAiQueryCount] = useState(0); // Track number of AI queries sent
+  const [aiQueryCount, setAiQueryCount] = useState(previousQueries); // Track number of AI queries sent
   const MAX_AI_QUERIES = 15; // Maximum number of AI queries allowed per session
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
-  const TOTAL_TIME = DEV_MODE ? 30 : 20 * 60; // DEV: 1 minute, PROD: 20 minutes
-  const MIN_TIME_REQUIRED = DEV_MODE ? 15 : 5 * 60; // DEV: 15 seconds, PROD: 5 minutes (25% of total time)
+  const TOTAL_TIME = DEV_MODE ? 30 : PHASE_SECONDS;
+  const MIN_TIME_REQUIRED = DEV_MODE ? 15 : 5 * 60;
   const [timeRemaining, setTimeRemaining] = useState(TOTAL_TIME);
+  const [deadline, setDeadline] = useState(() => Date.now() + TOTAL_TIME * 1000);
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
@@ -1306,10 +1183,10 @@ const EditorView: React.FC<{
 
   // Timer countdown effect
   React.useEffect(() => {
-    if (timeRemaining > 0) {
+    if (!skip && timeRemaining > 0) {
       const timer = setTimeout(() => {
-        setTimeRemaining(prev => {
-          const newTime = prev - 1;
+        setTimeRemaining(() => {
+          const newTime = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
           
           // Show reminders at 5:00 and 1:00
           if (newTime === 300) {
@@ -1321,7 +1198,7 @@ const EditorView: React.FC<{
           }
           
           // Show word count warnings at 10:00, 5:00, and 2:00 if word count is invalid
-          const isWordCountInvalid = wordCount < 250 || wordCount > 350;
+          const isWordCountInvalid = phase === 'final' && (wordCount < 250 || wordCount > 350);
           if (isWordCountInvalid) {
             if (newTime === 600) { // 10 minutes
               setShowWordCountWarning('10min');
@@ -1340,13 +1217,14 @@ const EditorView: React.FC<{
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [timeRemaining, wordCount]);
+  }, [timeRemaining, wordCount, phase, deadline, skip]);
 
   // Handle timer expiration (separate effect to avoid re-triggering)
   React.useEffect(() => {
-    if (timeRemaining === 0 && !timeoutHandledRef.current) {
+    if (!skip && timeRemaining === 0 && !timeoutHandledRef.current) {
       timeoutHandledRef.current = true; // Mark as handled
-      
+      requestController.current?.abort();
+      if (phase === 'rough') { onNext(text, aiMessages); return; }
       // Only force proceed if word count is valid (at least 250 words, allow slightly over 350)
       if (wordCount >= 250 && wordCount <= 385) {
         onNext(text, aiMessages);
@@ -1356,35 +1234,33 @@ const EditorView: React.FC<{
         setGraceTimeRemaining(DEV_MODE ? 30 : 3 * 60); // DEV: 30 seconds, PROD: 3 minutes grace period
       }
     }
-  }, [timeRemaining, wordCount, text, aiMessages, onNext]);
+  }, [timeRemaining, wordCount, text, aiMessages, onNext, phase, skip]);
 
   // Grace period timer countdown
   React.useEffect(() => {
-    if (graceTimeRemaining !== null && graceTimeRemaining > 0) {
+    if (!skip && graceTimeRemaining !== null && graceTimeRemaining > 0) {
       const timer = setTimeout(() => {
         setGraceTimeRemaining(prev => prev! - 1);
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [graceTimeRemaining]);
+  }, [graceTimeRemaining, skip]);
 
   // Handle grace period expiration - force submit regardless of word count
   React.useEffect(() => {
-    if (graceTimeRemaining === 0 && !graceTimeoutHandledRef.current) {
+    if (!skip && graceTimeRemaining === 0 && !graceTimeoutHandledRef.current) {
       graceTimeoutHandledRef.current = true;
       
       // Force submit regardless of word count
       onNext(text, aiMessages);
     }
-  }, [graceTimeRemaining, wordCount, text, aiMessages, onNext]);
+  }, [graceTimeRemaining, wordCount, text, aiMessages, onNext, skip]);
 
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
-
-  const isAI = meta.group.startsWith("AI");
 
   // Refs to access current values without triggering re-renders
   const textRef = useRef(text);
@@ -1440,7 +1316,7 @@ const EditorView: React.FC<{
 
   const sendToAI = async (message: string) => {
     // Check if query limit has been reached
-    if (aiQueryCount >= MAX_AI_QUERIES) {
+    if (!isAI || isAILoading || (!skip && Date.now() >= deadline) || aiQueryCount >= MAX_AI_QUERIES) {
       console.warn('⚠️ AI query limit reached');
       return; // Don't send if limit reached
     }
@@ -1469,54 +1345,16 @@ const EditorView: React.FC<{
     // Set loading state
     setIsAILoading(true);
     
+    if (preview) {
+      setAiMessages(msgs => [...msgs, {role: 'assistant', content: '[Preview response — no model was called] Try developing the character’s dilemma, then revise for clarity and a strong ending.'}]);
+      setIsAILoading(false);
+      return;
+    }
     // Call OpenAI API
     try {
-      const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY || 'YOUR_OPENAI_API_KEY_HERE';
-      
-      if (!OPENAI_API_KEY || OPENAI_API_KEY === 'YOUR_OPENAI_API_KEY_HERE') {
-        console.warn('⚠️ OpenAI API key not configured');
-        setAiMessages((msgs)=>[...msgs, { 
-          role:"assistant", 
-          content: "[Error: OpenAI API key not configured. Please add VITE_OPENAI_API_KEY to your .env file]" 
-        }]);
-        return;
-      }
-      
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${OPENAI_API_KEY}`
-        },
-        body: JSON.stringify({
-          model: 'gpt-5-mini',
-          messages: [
-            {
-              role: 'system',
-              content: `Role and Objective:
-- Serve as a helpful assistant guiding the user to write a short story.
-
-Instructions:
-- Follow the user's requests: it could be to write a first draft, to make edits, or other requests.
-- The story must be composed from a first-person point of view.
-- The story should unfold within a single day (no more than 24 hours).
-
-Verbosity and Reasoning Effort:
-- Keep guidance and explanations brief. Set reasoning_effort = low.`
-            },
-            ...aiMessages.map(m => ({ role: m.role, content: m.content })),
-            { role: 'user', content: message }
-          ]
-        })
-      });
-      
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error?.message || 'API request failed');
-      }
-      
-      const data = await response.json();
-      const assistantMessage = data.choices[0]?.message?.content || 'No response from AI';
+      requestController.current = new AbortController();
+      const data = await studyApi({action: 'chat', sessionId, phase, message}, requestController.current.signal);
+      const assistantMessage = data.content;
       
       setAiMessages((msgs)=>[...msgs, { role:"assistant", content: assistantMessage }]);
       
@@ -1524,7 +1362,7 @@ Verbosity and Reasoning Effort:
       console.error('❌ OpenAI API error:', error);
       setAiMessages((msgs)=>[...msgs, { 
         role:"assistant", 
-        content: `[Error communicating with AI: ${error instanceof Error ? error.message : 'Unknown error'}]` 
+        content: `[Error communicating with the AI writing assistant: ${error instanceof Error ? error.message : 'Unknown error'}]`
       }]);
     } finally {
       // Always clear loading state
@@ -1533,9 +1371,9 @@ Verbosity and Reasoning Effort:
   };
 
   const EditorBox = (
-    <div className="h-full flex flex-col">
+    <div className="h-full min-h-0 flex flex-col">
       <div className="flex items-center justify-between mb-2">
-        <div className="font-semibold">Write Your Story</div>
+        <div className="font-semibold">Write Your Story{phaseError && <p role="alert" className="text-red-700 text-sm">{phaseError} Please reload or contact the researcher.</p>}</div>
         <div className="flex items-center gap-4">
           <div className={`text-sm ${
             wordCount < 250 || wordCount > 350 
@@ -1544,13 +1382,13 @@ Verbosity and Reasoning Effort:
           }`}>
             {wordCount} words
           </div>
-          <div className="text-xs text-gray-500">Required length: 250-350 words</div>
+          <div className="text-xs text-gray-500">{phase === "rough" ? "Final draft target: 250–350 words" : "Required length: 250–350 words"}</div>
         </div>
       </div>
-      {isAI && !hasUsedAI && !DEV_MODE && (
+      {isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE && (
         <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
-          <p className="text-blue-900 font-semibold mb-1">📝 Please start with the AI Assistant</p>
-          <p className="text-blue-800">Use the AI panel on the right to generate a first draft or story components before editing here.</p>
+          <p className="text-blue-900 font-semibold mb-1">📝 Please start with the AI writing assistant</p>
+          <p className="text-blue-800">Use the AI writing assistant panel on the right to generate a first draft or story components before editing here.</p>
         </div>
       )}
       {isAI && hasUsedAI && showEditorEnabledMessage && (
@@ -1558,40 +1396,40 @@ Verbosity and Reasoning Effort:
           <p className="text-green-900 font-semibold mb-1">✅ Main editor now enabled</p>
           <p className="text-green-800">
             You can now edit, revise, or write your own story. Remember:
-            <br/>• You're <span className="font-semibold">not required</span> to use the AI-generated content
-            <br/>• You can continue using the AI to edit, refine, or create new drafts with different tones
+            <br/>• You're <span className="font-semibold">not required</span> to use the content generated by the AI writing assistant
+            <br/>• You can continue using the AI writing assistant to edit, refine, or create new drafts with different tones
           </p>
         </div>
       )}
+      {isAI && timeRemaining > 0 && <button className="self-start border rounded-lg px-3 py-1 mb-2 text-sm disabled:opacity-40" disabled={!text || isAILoading} onClick={() => {setChatDraft(current => [current.trimEnd(), text.trim()].filter(Boolean).join('\n')); document.getElementById('ai-prompt')?.focus();}}>Add draft to prompt</button>}
       <textarea
         ref={editorRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        onPaste={(e)=>{ 
-          // Allow paste for AI groups, prevent for SELF groups
-          if (!isAI) {
-            e.preventDefault(); 
-          }
-        }}
         rows={18}
-        className="w-full border rounded-xl p-3 focus:outline-none focus:ring h-full"
-        placeholder={isAI && !hasUsedAI && !DEV_MODE ? "Please use the AI Assistant first..." : "Write here... (250-350 words)"}
+        className="w-full flex-1 min-h-0 resize-none overflow-y-auto border rounded-xl p-3 focus:outline-none focus:ring"
+        placeholder={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE ? "Please use the AI writing assistant first..." : "Write here... (250-350 words)"}
         spellCheck="true"
-        disabled={isAI && !hasUsedAI && !DEV_MODE}
-        style={isAI && !hasUsedAI && !DEV_MODE ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
+        disabled={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE}
+        style={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
       />
       <div className="mt-3 flex justify-end items-center text-xs text-gray-500">
-        <div>{isAI ? 'Note: Copy and paste is allowed only within the page' : 'Note: Copy and paste is disabled'}</div>
+        <div>Use Ctrl+C / Ctrl+V (Cmd+C / Cmd+V on Mac) to copy and paste.</div>
       </div>
     </div>
   );
 
   return (
     <Shell
-      title="Step 2 · Writing"
+      onPreviewNext={() => onNext(text, aiMessages)}
+      title={phase === "rough" ? "Step 2 · Rough draft" : "Step 3 · Final draft"}
       footer={
         <div className="flex flex-col items-center gap-4">
-          {showConfirmation ? (
+          {phase === 'rough' ? (
+            <div className="text-sm text-gray-600 text-center">
+              <p>Develop your rough draft. The final-draft section begins when this timer ends.</p>
+            </div>
+          ) : showConfirmation ? (
             <div className="flex flex-col items-center gap-3">
               <p className="text-sm text-gray-600">Are you sure you want to submit your story?</p>
               <div className="flex gap-3">
@@ -1612,9 +1450,9 @@ Verbosity and Reasoning Effort:
           ) : (
             <>
               {/* Show validation messages only if not in grace period or if word count is still < 250 */}
-              {!graceTimeRemaining && (timeRemaining > MIN_TIME_REQUIRED || wordCount < 250 || wordCount > 350) && (
+              {!graceTimeRemaining && (TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED || wordCount < 250 || wordCount > 350) && (
                 <div className="text-sm text-gray-600 text-center">
-                  {timeRemaining > MIN_TIME_REQUIRED && (
+                  {TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED && (
                     <div>Please spend at least {DEV_MODE ? '15 seconds' : '5 minutes'} writing ({TOTAL_TIME - timeRemaining} / {MIN_TIME_REQUIRED} seconds)</div>
                   )}
                   {wordCount < 250 && (
@@ -1633,13 +1471,13 @@ Verbosity and Reasoning Effort:
             <button
               onClick={() => setShowConfirmation(true)}
               disabled={
-                (timeRemaining > MIN_TIME_REQUIRED) || 
+                (TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED) ||
                 (wordCount < 250) || 
                 (graceTimeRemaining && wordCount > 385) ||
                 (!graceTimeRemaining && wordCount > 350)
               }
               className={`px-4 py-2 rounded-xl ${
-                (timeRemaining > MIN_TIME_REQUIRED) || 
+                (TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED) ||
                 (wordCount < 250) || 
                 (graceTimeRemaining && wordCount > 385) ||
                 (!graceTimeRemaining && wordCount > 350)
@@ -1647,8 +1485,8 @@ Verbosity and Reasoning Effort:
                   : 'bg-black text-white'
               }`}
               title={
-                timeRemaining > MIN_TIME_REQUIRED
-                  ? `Please wait ${timeRemaining - MIN_TIME_REQUIRED} more seconds`
+                TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED
+                  ? `Please wait ${MIN_TIME_REQUIRED - (TOTAL_TIME - timeRemaining)} more seconds`
                   : wordCount < 250 
                     ? `Need ${250 - wordCount} more words` 
                     : (graceTimeRemaining && wordCount > 385)
@@ -1665,6 +1503,12 @@ Verbosity and Reasoning Effort:
         </div>
       }
     >
+      <div className="mb-6 rounded-xl border border-indigo-200 bg-indigo-50 p-4 text-indigo-950">
+        <p className="font-semibold">{phase === 'rough' ? 'Part 1 of 2 · Rough draft' : 'Part 2 of 2 · Final draft'} · 10 minutes</p>
+        <p>{phase === 'rough' ? 'Write a rough draft of your story. Focus on developing and expressing your ideas, including the characters, plot, setting, conflict and resolution. Prioritize getting your ideas onto the page rather than perfecting the wording. By the end of this phase, you should have a complete rough draft.' : 'Revise your rough draft into a final version of the story. Reread what you have written and consider how effectively it communicates your intended ideas. Polish and refine wording and details in the story. By the end of this, you should have a complete final draft.'}</p>
+        {phase === 'rough' && <p className="mt-3"><strong>You will then have an additional 10 minutes to polish and refine your rough draft into a final draft.</strong></p>}
+        {isAI && (phase === 'rough' || access === 'final') && <p className="mt-4">You have access to an AI writing assistant to help you with the writing process.</p>}
+      </div>
       {/* Timer and Warnings - Fixed to top-right */}
       <div className="fixed top-4 right-4 z-40 flex flex-col items-end gap-3 max-w-md">
         {/* Grace Period Warning - Highest priority */}
@@ -1780,7 +1624,7 @@ Verbosity and Reasoning Effort:
             <>
               <div className="mb-6 p-4 bg-green-50 border-2 border-green-300 rounded-xl">
                 <p className="text-sm text-green-900">
-                  <span className="font-semibold">Remember:</span> There is <u>no penalty for AI-generated content or for the amount of effort you put in</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade. You do not need to use the entire allotted time!
+                  <span className="font-semibold">Remember:</span> There is <u>no penalty for content generated by the AI writing assistant or for the amount of effort you put in</u>. As long as the writing is free of technical errors and organizationally sound, you will likely receive a good grade. You do not need to use the entire allotted time!
                 </p>
               </div>
               <hr className="mb-6 border-t-2 border-gray-300" />
@@ -1800,11 +1644,12 @@ Verbosity and Reasoning Effort:
         </>
       )}
 
-      {isAI ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 min-h-[520px]">
-          <div>{EditorBox}</div>
-          <div className="border rounded-2xl p-4">
+      {isAI && timeRemaining > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="h-[clamp(560px,75vh,720px)] min-w-0 border rounded-2xl p-4">{EditorBox}</div>
+          <div className="h-[clamp(560px,75vh,720px)] min-w-0 border rounded-2xl p-4">
             <AIChatPanel 
+              onUseText={value => setText(current => [current.trimEnd(), value.trim()].filter(Boolean).join('\n'))}
               messages={aiMessages} 
               onSend={sendToAI} 
               draft={chatDraft} 
@@ -1816,7 +1661,7 @@ Verbosity and Reasoning Effort:
           </div>
         </div>
       ) : (
-        <div className="min-h-[520px]">{EditorBox}</div>
+        <div className="h-[clamp(560px,75vh,720px)] border rounded-2xl p-4">{EditorBox}</div>
       )}
       {/* Brainstorm Outline - Visible by default with collapse option */}
       <div className="mt-6 border-t pt-4">
@@ -1829,11 +1674,14 @@ Verbosity and Reasoning Effort:
             {showBrainstormOutline ? '▼ Hide' : '▶ Show'}
           </button>
         </div>
+        <p className="text-sm text-gray-600 mb-2">The AI writing assistant cannot see your outline. Copy and paste it into the chat prompt, or select “Add outline to prompt” to share it.</p>
+        {isAI && timeRemaining > 0 && <button className="border rounded-lg px-3 py-1 mb-3 text-sm" disabled={isAILoading} onClick={() => {setChatDraft(current => [current.trimEnd(), outlineText(brainstorm).trim()].filter(Boolean).join('\n')); document.getElementById('ai-prompt')?.focus();}}>Add outline to prompt</button>}
         {showBrainstormOutline && (() => {
           try {
             const brainstormData = JSON.parse(brainstorm || '{}');
             return (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                {brainstormData.quick_ideas && <div className="p-3 bg-gray-50 rounded-lg md:col-span-2"><h4 className="font-semibold text-gray-900 mb-1">Quick ideas</h4><div className="text-gray-700 whitespace-pre-wrap">{brainstormData.quick_ideas}</div></div>}
                 {brainstormData.main_char && (
                   <div className="p-3 bg-blue-50 rounded-lg">
                     <div className="font-semibold text-blue-900 mb-1">Main Character</div>
@@ -1871,135 +1719,6 @@ Verbosity and Reasoning Effort:
             return <pre className="mt-2 bg-gray-50 p-3 rounded-lg whitespace-pre-wrap text-sm">{brainstorm || "(no brainstorm)"}</pre>;
           }
         })()}
-      </div>
-    </Shell>
-  );
-};
-
-// ---- View 4: Survey ----
-const SurveyView: React.FC<{ meta: SessionMeta; onSubmit: (payload: any)=>void }>=({ meta, onSubmit })=>{
-  const [q1, setQ1] = useState("");
-  const [q2, setQ2] = useState("");
-  const [q3Items, setQ3Items] = useState<string[]>(["", ""]); // Start with 2 empty items
-  const [q4, setQ4] = useState(""); // AI strategy question (only for AI groups)
-  
-  const addQ3Item = () => {
-    setQ3Items([...q3Items, ""]);
-  };
-  
-  const removeQ3Item = (index: number) => {
-    if (q3Items.length > 1) { // Keep at least 1 item
-      setQ3Items(q3Items.filter((_, i) => i !== index));
-    }
-  };
-  
-  const updateQ3Item = (index: number, value: string) => {
-    const newItems = [...q3Items];
-    newItems[index] = value;
-    setQ3Items(newItems);
-  };
-
-  // Check if at least one q3 item is filled
-  const hasQ3Response = q3Items.some(item => item.trim().length > 0);
-  const isAIGroup = meta.group.startsWith("AI");
-  const canSubmit = q1 && q2 && hasQ3Response && (!isAIGroup || q4.trim().length > 0);
-
-  return (
-    <Shell
-      title="Post-Session Survey"
-      footer={
-        <>
-          {!canSubmit && (
-            <div className="text-sm text-gray-600 text-center mb-2">
-              Please answer all questions to continue
-            </div>
-          )}
-          <button 
-            className={`px-4 py-2 rounded-xl ${
-              canSubmit 
-                ? 'bg-black text-white' 
-                : 'bg-gray-300 text-gray-600 cursor-not-allowed'
-            }`}
-            onClick={()=> onSubmit({ q1, q2, q3: q3Items, q4: isAIGroup ? q4 : null })}
-            disabled={!canSubmit}
-          >
-          Submit & Finish
-        </button>
-        </>
-      }
-    >
-      <div className="space-y-4">
-        <div className="text-sm text-gray-600">Thank you! A few quick questions:</div>
-        <label className="block">
-          <div className="mb-1 font-medium">How familiar are you with using AI for general tasks? (i.e., what is your level of expertise in using AI?)</div>
-          <select className="w-full border rounded-xl p-2" value={q1} onChange={(e)=>setQ1(e.target.value)}>
-            <option value="">Select…</option>
-            <option>Not at all familiar</option>
-            <option>Slightly familiar</option>
-            <option>Somewhat familiar</option>
-            <option>Very familiar</option>
-            <option>Extremely familiar</option>
-          </select>
-        </label>
-        <label className="block">
-          <div className="mb-1 font-medium">How familiar are you with using <span className="font-semibold">AI for writing (creative or otherwise)</span>?</div>
-          <select className="w-full border rounded-xl p-2" value={q2} onChange={(e)=>setQ2(e.target.value)}>
-            <option value="">Select…</option>
-            <option>Not at all familiar</option>
-            <option>Slightly familiar</option>
-            <option>Somewhat familiar</option>
-            <option>Very familiar</option>
-            <option>Extremely familiar</option>
-          </select>
-        </label>
-        <div className="block">
-          <div className="mb-2 font-medium">What aspects would you look out for to determine if a piece of writing is AI-generated?</div>
-          <div className="text-xs text-gray-500 mb-2">Add one aspect per line. You can add or remove lines as needed. Please add at least one aspect.</div>
-          <div className="space-y-2">
-            {q3Items.map((item, index) => (
-              <div key={index} className="flex gap-2 items-center">
-                <input
-                  type="text"
-                  className="flex-1 border rounded-lg p-2 text-sm"
-                  placeholder={`Aspect ${index + 1}`}
-                  value={item}
-                  onChange={(e) => updateQ3Item(index, e.target.value)}
-                />
-                <button
-                  onClick={() => removeQ3Item(index)}
-                  disabled={q3Items.length === 1}
-                  className={`px-3 py-2 rounded-lg text-sm ${
-                    q3Items.length === 1
-                      ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
-                      : 'bg-red-100 text-red-600 hover:bg-red-200'
-                  }`}
-                  title="Remove this item"
-                >
-                  ✕
-                </button>
-              </div>
-            ))}
-            <button
-              onClick={addQ3Item}
-              className="px-3 py-2 rounded-lg text-sm bg-blue-100 text-blue-600 hover:bg-blue-200"
-            >
-              + Add another aspect
-            </button>
-          </div>
-        </div>
-        
-        {/* AI Strategy Question (only for AI groups) */}
-        {isAIGroup && (
-        <label className="block">
-            <div className="mb-1 font-medium">Briefly, what was your strategy in using AI to complete your writing task?</div>
-            <textarea
-              className="w-full border rounded-xl p-2 min-h-[100px]"
-              placeholder="Describe your approach to using the AI assistant..."
-              value={q4}
-              onChange={(e) => setQ4(e.target.value)}
-            />
-        </label>
-        )}
       </div>
     </Shell>
   );
@@ -2047,13 +1766,21 @@ function checkDeviceCompatibility(): { compatible: boolean; reason?: string } {
 }
 
 // ---- Root App ----
-const StudyApp: React.FC = () => {
+const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}> = ({
+  preview = false, access = STUDY_AI_ACCESS, startAt = 1,
+}) => {
+  const localPreview = previewEnabled && preview;
+  const skip = usePageThrough();
+  const [recall, setRecall] = useState<RecallState>({status: "loading"});
+  const recallStarted = useRef(false);
+  const [previewSubmission, setPreviewSubmission] = useState<Record<string, unknown> | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [step, setStep] = useState<Step>(1);
+  const [step, setStep] = useState<Step>(localPreview ? startAt : 1);
   const [meta, setMeta] = useState<SessionMeta | null>(null);
+  const [completionCode, setCompletionCode] = useState<string | null>(null);
   const [blocked, setBlocked] = useState<string | null>(null); // Track if participant is blocked
   const [deviceIncompatible, setDeviceIncompatible] = useState<string | null>(null); // Track device compatibility
-  const [brainstorm, setBrainstorm] = useState("");
+  const [brainstorm, setBrainstorm] = useState(localPreview && startAt === 4 ? JSON.stringify(previewBrainstorm) : "");
   const [finalText, setFinalText] = useState("");
   const [aiTranscript, setAiTranscript] = useState<{role:"user"|"assistant"; content:string}[]>([]);
   const [attentionMeta, setAttentionMeta] = useState<any>(null);
@@ -2061,7 +1788,7 @@ const StudyApp: React.FC = () => {
   const [totalViolations, setTotalViolations] = useState(0); // Track fullscreen violations
 
   // Attention tracking for brainstorm (step 3) and editor (step 4)
-  const attn = useWritingAttention(step === 3 || step === 4, {
+  const attn = useWritingAttention(!skip && (step === 3 || step === 4), {
     graceMs: 5000,
     halfLifeMs: 20000,
     nudgeThreshold: 0.5,
@@ -2077,7 +1804,7 @@ const StudyApp: React.FC = () => {
   useEffect(() => {
     if (attn.finalStrike && !bannedForStrikeRef.current && meta) {
       bannedForStrikeRef.current = true;
-      banParticipant(meta.prolificId);
+      if (!meta.localPreview) banParticipant(meta.prolificId);
       console.log('🚫 User banned due to attention strike');
     }
   }, [attn.finalStrike, meta]);
@@ -2086,7 +1813,7 @@ const StudyApp: React.FC = () => {
   useEffect(() => {
     if (totalViolations > 5 && !bannedForViolationsRef.current && meta) {
       bannedForViolationsRef.current = true;
-      banParticipant(meta.prolificId);
+      if (!meta.localPreview) banParticipant(meta.prolificId);
       console.log('🚫 User banned due to excessive fullscreen violations:', totalViolations);
       setBlocked('fullscreen_violations');
     }
@@ -2114,33 +1841,14 @@ const StudyApp: React.FC = () => {
           return;
         }
         
-      const prolificId = getProlificIdFromURL();
-        
-        // Debug: Check environment variables
-        console.log('🔍 Debug Info:');
-        console.log('VITE_SUPABASE_URL:', import.meta.env.VITE_SUPABASE_URL ? '✅ Set' : '❌ Missing');
-        console.log('VITE_SUPABASE_ANON:', import.meta.env.VITE_SUPABASE_ANON ? '✅ Set' : '❌ Missing');
-        console.log('Supabase client:', supabase ? '✅ Created' : '❌ Failed');
-        
-        // Halt if Supabase is not available
-        if (!supabase || !supabase.from || !import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON) {
-          console.error('❌ Supabase not properly configured - halting study');
-          setBlocked('supabase_error');
-          setLoaded(true);
-          return;
-        }
-        
-        // Check participant status and assign group
-      const group = await assignSimpleRandom(prolificId);
-      const startedAt = todayISO();
-        
-        // Ensure participant exists in database and start session
-        await ensureParticipant(prolificId, group);
-        const sid = await startSession(prolificId);
-        console.log('Session ID:', sid);
-        
-      setMeta({ prolificId, group, startedAt });
-        setSessionId(sid);
+      if (localPreview) {
+        setMeta({prolificId: 'LOCAL-PREVIEW', group: 'AI-DIV', startedAt: todayISO(), aiAccess: access, localPreview: true});
+        setLoaded(true);
+        return;
+      }
+      const started = await startStudy();
+      setMeta({prolificId: started.prolificId, group: started.group, startedAt: todayISO(), aiAccess: started.aiAccess, testSession: started.testSession});
+      setSessionId(started.sessionId);
       setLoaded(true);
       } catch (error: any) {
         console.error('❌ Failed to initialize session:', error);
@@ -2159,89 +1867,28 @@ const StudyApp: React.FC = () => {
       }
     };
     init();
-  }, []);
+  }, [localPreview, access]);
 
-  const onFinishSurvey = async (survey: any) => {
+  const onFinishSurvey = async (survey: PostTaskResponse) => {
     if (!meta) return;
-    
+    if (localPreview) {
+      setPreviewSubmission({meta, brainstorm, finalText, aiTranscript, attentionMeta, survey, finishedAt: todayISO()});
+      setStep(4.1 as Step);
+      return;
+    }
     try {
-      // Flush any remaining snapshots before completing
-      if (flushTimer) {
-        clearTimeout(flushTimer);
-        flushTimer = undefined;
-      }
-      if (snapshotBuffer.length > 0 && sessionId && supabase && supabase.from) {
-        try {
-          await supabase.from('snapshots').insert(snapshotBuffer.splice(0, snapshotBuffer.length));
-          console.log('💾 Final snapshots saved');
-        } catch (error) {
-          console.error('Failed to flush final snapshots:', error);
-        }
-      }
-      
-      // Submit final data to Supabase
-      if (sessionId) {
-        const wordCount = finalText.trim().split(/\s+/).filter(word => word.length > 0).length;
-        
-        console.log('🔄 Submitting to Supabase...');
-        console.log('Session ID:', sessionId);
-        console.log('Word count:', wordCount);
-        console.log('Final text length:', finalText.length);
-        
-        if (supabase && supabase.from) {
-          const submissionResult = await supabase.from('submissions').insert({
-            session_id: sessionId,
-            brainstorm_text: brainstorm, // This is now a JSON string with structured brainstorm data
-            final_text: finalText,
-            word_count: wordCount,
-            attention_meta: attentionMeta,   // include finalStrike etc.
-            survey_responses: survey,
-            ai_transcript: aiTranscript,
-          });
+      if (flushTimer) {clearTimeout(flushTimer); flushTimer = undefined;}
+      await flushSnapshots();
+      const saved = await studyApi({action: 'finish', sessionId, attentionMeta});
+      setCompletionCode(saved.completionCode);
 
-          if (submissionResult.error) {
-            console.error('❌ Submission failed:', submissionResult.error);
-          } else {
-            console.log('✅ Submission successful:', submissionResult.data);
-          }
-
-          // Mark session as finished
-          const sessionResult = await supabase.from('sessions')
-            .update({ finished_at: new Date().toISOString() })
-            .eq('id', sessionId);
-            
-          if (sessionResult.error) {
-            console.error('❌ Session update failed:', sessionResult.error);
-          } else {
-            console.log('✅ Session marked as finished');
-          }
-        } else {
-          console.warn('⚠️ Supabase not available, data saved locally only');
-        }
-      } else {
-        console.error('❌ No session ID available for submission');
-      }
-      
     // Persist locally and update balancing counts as a placeholder for server submission
     LocalStats.increment(meta.group);
     LocalStats.markCompleted(meta.prolificId);
 
-      // Bundle session payload (for console logging/debugging)
-    const payload = {
-      meta,
-        sessionId, // Include Supabase session ID
-      brainstorm,
-      finalText,
-      aiTranscript,
-      survey,
-        attentionMeta, // Include attention tracking data
-      finishedAt: todayISO(),
-    };
-    console.log("[SUBMIT] session payload", payload);
-
     } catch (error) {
       console.error('❌ Failed to submit study data:', error);
-      // Still proceed to completion screen even if submission fails
+      throw error; // Keep the survey visible if saving fails.
     }
 
     // Confirmation view (inline)
@@ -2252,7 +1899,8 @@ const StudyApp: React.FC = () => {
     <Shell title="All set!">
       <div className="prose max-w-none">
         <h2 className="text-xl font-semibold">Thanks for participating! 🎉</h2>
-        <p>Your responses have been recorded. You can now return to Prolific <a href="https://app.prolific.com/submissions/complete?cc=C13IMUFI" className="text-blue-600 underline">using this link</a>. Alternatively, copy and paste this code: C13IMUFI.</p>
+        {localPreview ? <p>Preview complete. No responses were sent to the study database or Prolific.</p> : meta?.testSession ? <p>Test complete. Your test responses have been saved. This is not a paid Prolific submission.</p> : <p>Your responses have been recorded. {completionCode && <>Return to Prolific <a href={`https://app.prolific.com/submissions/complete?cc=${encodeURIComponent(completionCode)}`} className="text-blue-600 underline">using this link</a>. Your completion code is {completionCode}.</>}</p>}
+        {localPreview && previewSubmission && <details className="mt-4"><summary>Inspect test submission</summary><pre className="mt-3 whitespace-pre-wrap text-sm">{JSON.stringify(previewSubmission, null, 2)}</pre></details>}
         {meta?.prolificId && (
           <p className="text-sm text-gray-600">Prolific ID: <span className="font-mono">{meta.prolificId}</span></p>
         )}
@@ -2278,7 +1926,7 @@ const StudyApp: React.FC = () => {
               You have been removed from this study due to failing attention checks.
             </p>
             <p className="text-gray-600">
-              Please <a href="https://app.prolific.com/submissions/complete?cc=C1KB1MCD" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C1KB1MCD.
+              Please <a href="https://app.prolific.com/submissions" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study.
             </p>
           </>
         ) : blocked === 'fullscreen_violations' ? (
@@ -2293,7 +1941,7 @@ const StudyApp: React.FC = () => {
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
               <p className="font-semibold text-red-800 mb-2">What to do next:</p>
               <p className="text-sm text-red-700">
-                Please <a href="https://app.prolific.com/submissions/complete?cc=C10S0BXP" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C10S0BXP</span>.
+                Please <a href="https://app.prolific.com/submissions" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study.
               </p>
             </div>
           </>
@@ -2304,7 +1952,7 @@ const StudyApp: React.FC = () => {
               The study system is not properly configured. Data tracking is required for this study.
             </p>
             <p className="text-gray-600">
-              Please contact the researcher, refresh the page, or try again later. If you decide to try later, <a href="https://app.prolific.com/submissions/complete?cc=C182OX5Y" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C182OX5Y.
+              Please contact the researcher, refresh the page, or try again later. If you decide to try later, <a href="https://app.prolific.com/submissions" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study.
             </p>
           </>
         ) : blocked === 'initialization_error' ? (
@@ -2314,7 +1962,7 @@ const StudyApp: React.FC = () => {
               An error occurred while initializing your session.
             </p>
             <p className="text-gray-600">
-              Please contact the researcher with your Prolific ID or try refreshing the page. If you decide to try later, <a href="https://app.prolific.com/submissions/complete?cc=C182OX5Y" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C182OX5Y.
+              Please contact the researcher with your Prolific ID or try refreshing the page. If you decide to try later, <a href="https://app.prolific.com/submissions" className="text-blue-600 underline">click this link</a> to go back to Prolific and return the study.
             </p>
           </>
         ) : blocked === 'already_started' ? (
@@ -2329,7 +1977,7 @@ const StudyApp: React.FC = () => {
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
               <p className="font-semibold text-red-800 mb-2">What to do next:</p>
               <p className="text-sm text-red-700">
-                Please <a href="https://app.prolific.com/submissions/complete?cc=C16B0MLX" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C16B0MLX</span>.
+                Please <a href="https://app.prolific.com/submissions" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study.
               </p>
             </div>
             <div className="mt-6 p-4 bg-blue-50 rounded-lg">
@@ -2342,7 +1990,7 @@ const StudyApp: React.FC = () => {
             <h2 className="text-xl font-semibold text-red-600">Study Already Completed</h2>
             <p>
               Our records show that you have already {blocked === 'already_completed' ? 'completed' : 'started'} this study.
-              Each participant can only complete the study once. <a href="https://app.prolific.com/submissions/complete?cc=C16B0MLX" className="text-blue-600 underline">Click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: C16B0MLX.
+              Each participant can only complete the study once. <a href="https://app.prolific.com/submissions" className="text-blue-600 underline">Click this link</a> to go back to Prolific and return the study.
             </p>
             <div className="mt-6 p-4 bg-blue-50 rounded-lg">
               <p className="text-sm font-semibold">If you believe this is an error:</p>
@@ -2371,7 +2019,7 @@ const StudyApp: React.FC = () => {
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
           <p className="font-semibold text-red-800 mb-2">What to do next:</p>
           <p className="text-sm text-red-700">
-            Please close this window and return the study on Prolific <a href="https://app.prolific.com/submissions/complete?cc=C8IDGK63" className="text-blue-600 underline">using this link</a>. Alternatively, copy and paste this code: C8IDGK63.
+            Please close this window and return the study on Prolific <a href="https://app.prolific.com/submissions" className="text-blue-600 underline">using this link</a>.
             Your participation data has been recorded as incomplete.
           </p>
         </div>
@@ -2405,7 +2053,7 @@ const StudyApp: React.FC = () => {
         <div className="p-4 bg-red-50 border border-red-200 rounded-lg">
           <p className="font-semibold text-red-800 mb-2">What to do next:</p>
           <p className="text-sm text-red-700">
-            Please <a href="https://app.prolific.com/submissions/complete?cc=C1BQO66A" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study. Alternatively, copy and paste this code: <span className="font-mono font-bold">C1BQO66A</span>.
+            Please <a href="https://app.prolific.com/submissions" className="text-blue-600 underline font-semibold">click this link</a> to go back to Prolific and return the study.
           </p>
           <p className="text-sm text-gray-600 mt-3">
             If you have access to a compatible device, you may try again from that device.
@@ -2451,11 +2099,7 @@ const StudyApp: React.FC = () => {
           <PromptView meta={meta} onNext={() => setStep(3)} />
         </ComplianceGate>
       )}
-      {/* {step === 3 && <BrainstormView meta={meta} value={brainstorm} setValue={setBrainstorm} onNext={()=> setStep(4)} />}
-      {step === 4 && (
-        <EditorView meta={meta} brainstorm={brainstorm} onNext={(t, a)=>{ setFinalText(t); setAiTranscript(a); setStep(5); }} />
-      )}
-      {step === 5 && <SurveyView meta={meta} onSubmit={onFinishSurvey} />} */}
+
 
 {step === 3 && (
   <ComplianceGate 
@@ -2560,16 +2204,19 @@ const StudyApp: React.FC = () => {
     )}
 
     {/* Your existing EditorView */}
-    <EditorView
+    <WritingStudy
+      preview={localPreview}
+      access={meta.aiAccess ?? access}
       meta={meta}
-      brainstorm={brainstorm}
+      brainstorm={localPreview && !outlineText(brainstorm).trim() ? JSON.stringify(previewBrainstorm) : brainstorm}
       sessionId={sessionId}
-      onNext={(t, a) => {
+      onNext={(t, a, writing) => {
         // record attention status in your payload
         setFinalText(t);
         setAiTranscript(a);
         // example: store to state to include at submit
         setAttentionMeta({
+          writing,
           attentionScoreAtSubmit: attn.score,
           worstAttentionScore: attn.worstScore,
           nudges: attn.nudges,
@@ -2577,6 +2224,13 @@ const StudyApp: React.FC = () => {
           finalStrike: attn.finalStrike, // <-- flag this if you want to invalidate/mark
           fullscreenViolations: totalViolations, // Include fullscreen violation count
         });
+        if (!recallStarted.current) {
+          recallStarted.current = true;
+          setRecall({status: 'loading'});
+          void recallApi({action: 'generate', story: t || (localPreview && skip ? 'Local layout preview story.' : ''), preview: localPreview, sessionId})
+            .then(data => setRecall({status: 'ready', data}))
+            .catch(error => setRecall({status: 'error', message: error instanceof Error ? error.message : 'Unable to prepare story questions.'}));
+        }
         setStep(5);
       }}
     />
@@ -2590,7 +2244,7 @@ const StudyApp: React.FC = () => {
       console.log("Violation", n);
       setTotalViolations(n);
     }}>
-    <SurveyView meta={meta} onSubmit={onFinishSurvey} />
+    <PostTaskSurvey hasAI={meta.group.startsWith("AI") && (meta.aiAccess ?? access) !== "neither"} aiAccess={meta.aiAccess ?? access} recall={recall} preview={localPreview} sessionId={sessionId} onSubmit={onFinishSurvey} />
   </ComplianceGate>
 )}
 

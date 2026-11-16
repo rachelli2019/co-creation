@@ -1,3 +1,4 @@
+import { usePageThrough } from './previewMode';
 import React from "react";
 import { useComplianceGuard } from "./useComplianceGuard";
 
@@ -9,7 +10,9 @@ export const ComplianceGate: React.FC<{
   onResume?: () => void;
   initialViolations?: number;
 }> = ({ children, requireFullscreen = true, enableWakeLock = true, onViolation, onResume, initialViolations }) => {
+  const skip = usePageThrough();
   const { needsAttention, violations, resume } = useComplianceGuard({
+    disabled: skip,
     requireFullscreen,
     enableWakeLock,
     onViolation,
