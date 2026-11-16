@@ -34,14 +34,13 @@ test('Prolific eligibility requires exact participant, study, active submission'
  assert.equal(await verifyProlific(body,settings,async()=>Response.json({...valid,status:'APPROVED'})),false);
 });
 
-test('hosted walkthrough is invitation gated and never contacts storage or models',async()=>{
+test('hosted walkthrough opens without an invitation and never contacts storage or models',async()=>{
  const {dispatch}=await import('../server/http.mjs');
- const config={...env,STUDY_MODE:'walkthrough',STUDY_ENROLLMENT_OPEN:'true',STUDY_INVITE_CODE:'demo-test'};
+ const config={...env,STUDY_MODE:'walkthrough',STUDY_ENROLLMENT_OPEN:'true'};
  const original=globalThis.fetch;
  globalThis.fetch=async()=>{throw new Error('Walkthrough must not contact external services');};
  try{
-  assert.equal((await studyRequest({action:'start',invite:'wrong'},{env:config})).status,403);
-  const started=await studyRequest({action:'start',invite:'demo-test'},{env:config});
+  const started=await studyRequest({action:'start'},{env:config});
   assert.equal(started.status,200);assert.equal(started.data.walkthrough,true);
   const req={headers:{cookie:started.cookie.split(';')[0],host:'study.example'}};
   assert.equal((await dispatch('/api/study',{action:'finish'},req,config)).status,403);

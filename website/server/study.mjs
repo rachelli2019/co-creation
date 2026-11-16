@@ -31,7 +31,6 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    if (env.STUDY_ENROLLMENT_OPEN !== 'true') return denied();
    if (env.STUDY_MODE === 'walkthrough') {
     const previous = readSession(cookie, env);
-    if (previous?.mode !== 'walkthrough' && !equalSecret(body.invite, env.STUDY_INVITE_CODE)) return denied('Enter the preview invitation code to continue.');
     const id = previous?.mode === 'walkthrough' ? previous.id : randomUUID();
     const signed = issueSession(id,env,Date.now(),'walkthrough');
     return {...ok({walkthrough:true,testSession:true,prolificId:'PREVIEW',group:'AI-DIV',aiAccess:'both'}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
