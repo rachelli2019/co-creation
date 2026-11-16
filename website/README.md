@@ -107,3 +107,9 @@ Survey version 16 standardizes task-specific references to “AI writing assista
 Survey version 17 restores the source wording (“AI”) in the six CAIM items (caim_p1–caim_p4 and caim_m1–caim_m2). Their answer IDs and 1–5 agreement scale remain unchanged.
 
 Survey version 18 replaces the eight trust items with the six supplied statements referring to “the AI writing assistant.” The four capability IDs and first two willingness IDs are retained; willingness items 3 and 4 are removed. The items appear as questions 17–22 in AI conditions and retain the 1–5 agreement scale. Only willingness item 1 is reverse-coded for analysis; raw answers are stored. Subsequent questions are renumbered automatically (23–27).
+
+## GitHub deployments
+
+Vercel project `co-creation-study` is connected to `rachelli2019/co-creation`, with `website` as its root directory. Pushes to `main` create Preview deployments; `codex/study-release` is the Production branch. Update the release branch only when intentionally releasing the participant study.
+
+The OpenAI key is configured server-side for Production and for Preview on `main`. Other preview branches do not inherit that branch-specific key. The shared Preview is still configured as a simulated walkthrough; adding a key alone does not enable real model calls or database writes. Real-backend testing requires a separate configuration step.
