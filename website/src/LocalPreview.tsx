@@ -5,7 +5,7 @@ import { accessLabels, parseAIAccess } from './writingConfig';
 import type { AIAccess } from './writingConfig';
 
 export default function LocalPreview() {
-  const [access, setAccess] = useState<AIAccess>(() => parseAIAccess(import.meta.env.VITE_WRITING_AI_ACCESS));
+  const [access, setAccess] = useState<AIAccess>(() => parseAIAccess(new URLSearchParams(window.location.search).get('condition') || import.meta.env.VITE_WRITING_AI_ACCESS));
   const [skipTimers, setSkipTimers] = useState(!import.meta.env.DEV);
   const [run, setRun] = useState(0);
   const [startAt, setStartAt] = useState<1 | 4>(1);

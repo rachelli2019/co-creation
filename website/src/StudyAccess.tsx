@@ -5,7 +5,7 @@ export function startStudy(invite?: string) {
  if (!startPromise || invite !== undefined) {
   const params=new URLSearchParams(window.location.search);
   const fragment=new URLSearchParams(window.location.hash.slice(1));
-  startPromise=studyApi({action:'start',invite:invite ?? fragment.get('invite') ?? params.get('invite') ?? '',
+  startPromise=studyApi({action:'start',condition:params.get('condition'),invite:invite ?? fragment.get('invite') ?? params.get('invite') ?? '',
    prolificId:params.get('PROLIFIC_PID') || params.get('prolific_id') || params.get('pid'),
    studyId:params.get('STUDY_ID'),prolificSessionId:params.get('SESSION_ID')}).then(result=>{
     params.delete('invite');fragment.delete('invite');

@@ -92,10 +92,19 @@ const publicResult = record => ({id: record.id, simulated: record.simulated || f
 
 // Shared by the Vercel function and the local Vite middleware. Secrets never reach the browser.
 export async function recallRequest(body, {env = process.env, allowPreview = false, generate = generateQuestions} = {}) {
-  if (!body || !['generate', 'score', 'save_record'].includes(body.action)) return {status: 400, data: {error: 'Invalid request'}};
+  if (!body || !['generate', 'status', 'score', 'save_record'].includes(body.action)) return {status: 400, data: {error: 'Invalid request'}};
   const preview = allowPreview && body.preview === true;
   if (body.preview && !preview) return {status: 403, data: {error: 'Preview is local only'}};
   try {
+    if (body.action === 'status') {
+      if (preview || !/^[\da-f-]{36}$/i.test(body.sessionId || '')) return {status: 400, data: {error: 'Invalid session'}};
+      const response = await database(env, `recall_generations?session_id=eq.${body.sessionId}&select=*`);
+      if (!response.ok) throw new Error('Could not retrieve quiz status');
+      const record = (await response.json())[0];
+      if (!record) return {status: 200, data: {status: 'missing'}};
+      if (record.status === 'ready') return {status: 200, data: {status: 'ready', data: publicResult(record)}};
+      return {status: 200, data: {status: record.status, retryable: record.status === 'failed' || Date.now() - Date.parse(record.created_at) > 90000}};
+    }
     if (body.action === 'save_record') {
       if (!['rough_draft', 'survey'].includes(body.kind) || !body.payload || typeof body.payload !== 'object' || Array.isArray(body.payload)) return {status: 400, data: {error: 'Invalid study record'}};
       if (body.kind === 'rough_draft' && (typeof body.payload.text !== 'string' || !Array.isArray(body.payload.transcript) || typeof body.payload.completedAt !== 'string')) return {status: 400, data: {error: 'Invalid rough draft'}};
@@ -138,7 +147,7 @@ export async function recallRequest(body, {env = process.env, allowPreview = fal
       return {status: 200, data: {generationId: record.id, ...responses, simulated: record.simulated || false}};
     }
     if (typeof body.story !== 'string' || !body.story.trim() || body.story.length > 20000) return {status: 400, data: {error: 'A story of 1–20,000 characters is required'}};
-    let record = {id: randomUUID(), session_id: body.sessionId, story: body.story, status: 'pending', simulated: preview};
+    let record = {id: randomUUID(), session_id: body.sessionId, story: body.story, status: 'pending', simulated: preview, created_at: new Date().toISOString()};
     if (!preview) {
       if (!/^[\da-f-]{36}$/i.test(body.sessionId || '')) return {status: 400, data: {error: 'Invalid session'}};
       const session = await database(env, `sessions?id=eq.${body.sessionId}&finished_at=is.null&select=id`);
@@ -150,13 +159,21 @@ export async function recallRequest(body, {env = process.env, allowPreview = fal
         const previous = (await existing.json())[0];
         if (previous?.story !== body.story) return {status: 409, data: {error: 'The submitted story cannot be changed'}};
         if (previous?.status === 'ready') return {status: 200, data: publicResult(previous)};
-        return {status: 409, data: {error: 'Recall generation is already pending or has failed. Please contact the researcher.'}};
+        if (previous.status !== 'failed' && !(Date.now() - Date.parse(previous.created_at) > 90000)) return {status: 409, data: {error: 'Story questions are still being prepared.'}};
+        // Compare-and-swap the attempt timestamp. Only one caller can retry.
+        const retry = await database(env, `recall_generations?id=eq.${previous.id}&status=eq.${previous.status}&created_at=eq.${encodeURIComponent(previous.created_at)}`, {method: 'PATCH', body: JSON.stringify({status: 'pending', created_at: record.created_at})});
+        if (!retry.ok) throw new Error('Could not retry quiz generation');
+        const reclaimed = (await retry.json())[0];
+        if (!reclaimed) return {status: 409, data: {error: 'Story questions are still being prepared.'}};
+        record = reclaimed;
       }
+      else {
       if (!claimed.ok) throw new Error('Could not save submitted story');
       // Start the model only after Supabase confirms the immutable final story.
       const saved = (await claimed.json())[0];
       if (!saved || saved.story !== body.story || saved.status !== 'pending') throw new Error('Could not confirm saved story');
       record = saved;
+      }
     }
     try {
       const result = preview && env.RECALL_PREVIEW_LIVE !== 'true'
@@ -168,12 +185,12 @@ export async function recallRequest(body, {env = process.env, allowPreview = fal
         if (previews.size >= 100) previews.delete(previews.keys().next().value);
         previews.set(record.id, record);
       } else {
-        const saved = await database(env, `recall_generations?id=eq.${record.id}`, {method: 'PATCH', body: JSON.stringify(record)});
-        if (!saved.ok) throw new Error('Could not save recall questions');
+        const saved = await database(env, `recall_generations?id=eq.${record.id}&status=eq.pending&created_at=eq.${encodeURIComponent(record.created_at)}`, {method: 'PATCH', body: JSON.stringify(record)});
+        if (!saved.ok || !(await saved.json()).length) throw new Error('Could not save recall questions');
       }
       return {status: 200, data: publicResult(record)};
     } catch (error) {
-      if (!preview) await database(env, `recall_generations?id=eq.${record.id}`, {method: 'PATCH', body: JSON.stringify({status: 'failed'})}).catch(() => {});
+      if (!preview) await database(env, `recall_generations?id=eq.${record.id}&status=eq.pending&created_at=eq.${encodeURIComponent(record.created_at)}`, {method: 'PATCH', body: JSON.stringify({status: 'failed'})}).catch(() => {});
       throw error;
     }
   } catch (error) {

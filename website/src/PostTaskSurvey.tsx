@@ -1,3 +1,4 @@
+import {useSessionDraft} from './useSessionDraft';
 import { useEffect, useState } from 'react';
 import { recallApi } from './recallApi';
 import { surveyPages } from './surveyQuestions';
@@ -42,8 +43,9 @@ function Question({question: q, value, setValue, number}: {question: SurveyQuest
       </div>}
   </fieldset>;
 }
-export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessionId, onSubmit}: {
+export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessionId, onRetryQuiz, onSubmit}: {
   hasAI: boolean; aiAccess: AIAccess; recall: RecallState; preview: boolean; sessionId: string | null;
+  onRetryQuiz: () => void;
   onSubmit: (response: PostTaskResponse) => Promise<void>;
 }) {
   const skip = usePageThrough();
@@ -59,12 +61,13 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
       number: splitStrategy ? `${number}${i === 0 ? 'a' : 'b'}` : String(number),
     }));
   })})).filter(p => p.questions.length);
-  const [page, setPage] = useState(0);
+  const draftKey = !preview && sessionId ? `${sessionId}:survey` : null;
+  const [page, setPage] = useSessionDraft(draftKey && `${draftKey}:page`, 0);
   useEffect(() => { window.scrollTo(0, 0); }, [page]);
-  const [answers, setAnswers] = useState<SurveyAnswers>({});
-  const [recallAnswers, setRecallAnswers] = useState<Record<string, number>>({});
+  const [answers, setAnswers] = useSessionDraft<SurveyAnswers>(draftKey && `${draftKey}:answers`, {});
+  const [recallAnswers, setRecallAnswers] = useSessionDraft<Record<string, number>>(draftKey && `${draftKey}:quiz`, {});
   const [saving, setSaving] = useState(false);
-  const [surveySubmittedAt, setSurveySubmittedAt] = useState<string | null>(null);
+  const [surveySubmittedAt, setSurveySubmittedAt] = useSessionDraft<string | null>(draftKey && `${draftKey}:submitted`, null);
   const [error, setError] = useState('');
   const isRecall = page === pages.length;
   const current = pages[page];
@@ -100,7 +103,7 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
     <div className="space-y-7">
       {!isRecall && current.questions.map(q => <Question key={q.id} question={q} number={q.number} value={answers[q.id]} setValue={v => setAnswers(a => ({...a, [q.id]: v}))} />)}
       {isRecall && recall.status === 'loading' && <p role="status">Preparing your story questions… Please wait a moment.</p>}
-      {isRecall && recall.status === 'error' && <p role="alert" className="text-red-700">{recall.message}</p>}
+      {isRecall && recall.status === 'error' && <div><p role="alert" className="text-red-700">{recall.message}</p><button className="mt-3 border rounded-lg px-4 py-2" onClick={onRetryQuiz}>Retry preparing quiz</button></div>}
       {isRecall && recall.status === 'ready' && <>
         {recall.data.simulated && <p className="p-3 rounded bg-amber-50 text-sm">Local preview: these are example questions to test the layout, not a factual assessment of your story.</p>}
         {recall.data.questions.map((q, i) => <fieldset key={q.id} className="border-b pb-6"><legend className="font-medium mb-3">{i + 1}. {q.question}</legend>

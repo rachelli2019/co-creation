@@ -140,3 +140,34 @@ test('failed final-story save never calls the quiz model',async(t)=>{
  const result=await recallRequest({action:'generate',sessionId:'33333333-3333-4333-8333-333333333333',story:'Final story'}, {env:{SUPABASE_URL:'https://example.invalid',SUPABASE_SERVICE_ROLE_KEY:'test'},generate:async()=>{calls++;}});
  assert.equal(result.status,503);assert.equal(calls,0);
 });
+
+test('failed and stale attempts can retry once; live attempts are not duplicated and status hides keys', async t => {
+ const sessionId='44444444-4444-4444-8444-444444444444';
+ let record={id:sessionId,session_id:sessionId,story:'Saved story',status:'failed',created_at:new Date(0).toISOString()};
+ let calls=0, release;
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(url.includes('/sessions?')) return Response.json([{id:sessionId}]);
+  if(options.method==='POST') return new Response(null,{status:409});
+  if(options.method==='PATCH') {
+   const params=new URL(url).searchParams;
+   if(params.get('status')!==`eq.${record.status}` || params.get('created_at')!==`eq.${record.created_at}`) return Response.json([]);
+   record={...record,...JSON.parse(options.body)};
+  }
+  return Response.json([record]);
+ });
+ const pending=new Promise(resolve=>{release=resolve;});
+ const settings={env:{SUPABASE_URL:'https://example.invalid',SUPABASE_SERVICE_ROLE_KEY:'test'},generate:async()=>{calls++;await pending;return {questions,model:'test'};}};
+ const body={action:'generate',sessionId,story:record.story};
+ assert.equal((await recallRequest({action:'status',sessionId},settings)).data.retryable,true);
+ const first=recallRequest(body,settings);
+ // Let the claim finish before requesting a concurrent retry.
+ await new Promise(resolve=>setImmediate(resolve));
+ assert.equal((await recallRequest(body,settings)).status,409);
+ assert.equal((await recallRequest({action:'status',sessionId},settings)).data.retryable,false);
+ release(); assert.equal((await first).status,200);assert.equal(calls,1);
+ const ready=(await recallRequest({action:'status',sessionId},settings)).data;
+ assert.equal(ready.status,'ready'); assert.equal(ready.data.questions[0].correctIndex,undefined);
+ assert.equal(ready.data.story,undefined);
+ record={...record,status:'pending',created_at:new Date(0).toISOString()};
+ assert.equal((await recallRequest(body,settings)).status,200);assert.equal(calls,2);
+});

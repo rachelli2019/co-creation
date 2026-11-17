@@ -69,3 +69,29 @@ test('open test entry creates labelled sessions but cannot bypass Prolific verif
   assert.equal(records.length,2);
  } finally {globalThis.fetch=original;}
 });
+
+test('manual condition links select and store pilot schedules, reject invalid values and cannot switch sessions',async t=>{
+ const records=[];
+ let saved;
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(options.method==='POST') {
+   const body=JSON.parse(options.body);records.push(body);
+   if(url.endsWith('/sessions')) saved=body;
+   return Response.json([]);
+  }
+  return Response.json(saved?[saved]:[]);
+ });
+ const settings={...env,STUDY_MODE:'test',STUDY_TEST_OPEN_ENTRY:'true',STUDY_ENROLLMENT_OPEN:'true'};
+ for(const condition of ['rough','final','both']) {
+  const result=await studyRequest({action:'start',condition},{env:settings});
+  assert.equal(result.status,200);assert.equal(result.data.aiAccess,condition);
+  assert.equal(saved.ai_access,condition);
+  const cookie=result.cookie.split(';')[0];
+  assert.equal((await studyRequest({action:'start',condition},{env:settings,cookie})).status,200);
+  assert.equal((await studyRequest({action:'start',condition:condition==='both'?'rough':'both'},{env:settings,cookie})).status,403);
+ }
+ const before=records.length;
+ assert.equal((await studyRequest({action:'start',condition:'random-noun'},{env:settings})).status,400);
+ assert.equal((await studyRequest({action:'start',condition:'rough'},{env:{...settings,STUDY_MODE:'prolific'}})).status,403);
+ assert.equal(records.length,before);
+});

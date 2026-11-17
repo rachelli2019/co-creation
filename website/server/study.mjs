@@ -29,23 +29,29 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
   if (!body || typeof body.action !== 'string') return {status:400,data:{error:'Invalid request'}};
   if (body.action === 'start') {
    if (env.STUDY_ENROLLMENT_OPEN !== 'true') return denied();
+   const manualAllowed = ['walkthrough', 'test'].includes(env.STUDY_MODE) || env.STUDY_ALLOW_CONDITION_OVERRIDE === 'true';
+   const condition = body.condition;
+   if (condition != null && condition !== '') {
+    if (!manualAllowed) return denied('Manual condition links are not enabled for this study.');
+    if (!['rough', 'final', 'both'].includes(condition)) return {status:400,data:{error:'Condition must be rough, final, or both. The random-noun condition is not available yet.'}};
+   }
    if (env.STUDY_MODE === 'walkthrough') {
     const previous = readSession(cookie, env);
     const id = previous?.mode === 'walkthrough' ? previous.id : randomUUID();
     const signed = issueSession(id,env,Date.now(),'walkthrough');
-    return {...ok({walkthrough:true,testSession:true,prolificId:'PREVIEW',group:'AI-DIV',aiAccess:'both'}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
+    return {...ok({walkthrough:true,testSession:true,prolificId:'PREVIEW',group:'AI-DIV',aiAccess:condition || 'both'}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
    }
    const existing = await requireSession(cookie,{},env);
    if (existing) {
-    if (existing.finished_at) return denied('This study session has already been submitted.');
-    return ok({sessionId:existing.id,prolificId:existing.prolific_id,group:existing.group_key,aiAccess:existing.ai_access,testSession:existing.test_session});
+    if (condition && existing.ai_access !== condition) return denied('This session already has a different condition. Use a separate browser profile for a new test session; an existing participant cannot switch conditions.');
+    return ok({sessionId:existing.id,prolificId:existing.prolific_id,group:existing.group_key,aiAccess:existing.ai_access,testSession:existing.test_session,completed:!!existing.finished_at,completionCode:existing.finished_at && !existing.test_session ? env.PROLIFIC_COMPLETION_CODE : null});
    }
    const test = env.STUDY_MODE === 'test';
    if (!test && !/^[A-Z0-9]{6,16}$/.test(env.PROLIFIC_COMPLETION_CODE || '')) return denied('Study completion is not configured.');
    if (test ? env.STUDY_TEST_OPEN_ENTRY !== 'true' && !equalSecret(body.invite,env.STUDY_INVITE_CODE) : env.STUDY_MODE !== 'prolific' || !await verifyProlific(body,env)) return denied('Please use your authorized study invitation.');
    const id = randomUUID(), prolificId = test ? `TEST-${randomUUID()}` : body.prolificId;
    const signed = issueSession(id,env);
-   const access = env.STUDY_AI_ACCESS || 'both';
+   const access = (manualAllowed && condition) || env.STUDY_AI_ACCESS || 'both';
    if (!['rough','final','both','neither'].includes(access)) throw new Error('Invalid AI schedule');
    const group = 'AI-DIV';
    const participant = await database(env,'participants',{method:'POST',body:JSON.stringify({prolific_id:prolificId,group_key:group})});

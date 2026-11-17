@@ -1,3 +1,4 @@
+import {useSessionDraft, readDraft, writeDraft} from './useSessionDraft';
 import { previewBrainstorm, outlineText } from './previewBrainstorm';
 import React, { useEffect, useRef, useState } from "react";
 import { ComplianceGate } from "./ComplianceGate";
@@ -124,7 +125,7 @@ class LocalStats {
 // ---- Check participant status and handle re-entry ----
 // ---- Study Flow State ----
 
-type Step = 1 | 2 | 3 | 4 | 5; // 1=Instructions, 2=Brainstorm, 3=Editor, 4=Survey
+type Step = 1 | 2 | 3 | 4 | 4.1 | 5; // 1=Instructions, 2=Brainstorm, 3=Editor, 4=Survey
 
 interface SessionMeta {
   prolificId: string;
@@ -253,7 +254,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
           <h3 className="font-semibold mb-2">Instructions:</h3>
           <ul className="list-disc pl-6 space-y-2">
             <li>Be thoughtful and authentic in your responses!</li>
-            <li><span className="font-bold">Stay on the session.</span> Once you leave the session, you will not be able to return or start a new session.</li>
+            <li><span className="font-bold">Stay on the session.</span> Keep this tab open until you finish. Refreshing this tab restores your progress, but does not pause the timers.</li>
             {meta.group.includes("SELF") ? (
               <li><span className="font-bold">Do not use external AI tools</span> (e.g., Google, ChatGPT). We will be monitoring for prohibited AI usage using keystroke data, attention checks, and your final submission. <span className="font-bold text-red-500">If you are caught using AI, we will return your submission.</span></li>
             ) : (
@@ -343,17 +344,20 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
 // ---- View 2: Brainstorm ----
 const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: string; setValue: (s: string)=>void; sessionId?: string | null }>=({ onNext, meta, value, setValue, sessionId }) => {
   const skip = usePageThrough();
-  const [timeRemaining, setTimeRemaining] = React.useState(DEV_MODE ? 0 : 300); // 5 minutes in seconds
+  const draftKey = !meta.localPreview && sessionId ? `${sessionId}:brainstorm` : null;
+  const [brainstormDeadline] = useSessionDraft(draftKey && `${draftKey}:deadline`, () => Date.now() + (DEV_MODE ? 0 : 300000));
+  useEffect(() => {writeDraft(draftKey && `${draftKey}:deadline`, brainstormDeadline);}, [draftKey, brainstormDeadline]);
+  const [timeRemaining, setTimeRemaining] = React.useState(() => Math.max(0, Math.ceil((brainstormDeadline - Date.now()) / 1000))); // 5 minutes in seconds
   const [showConfirmation, setShowConfirmation] = React.useState(false);
   const [showReminder, setShowReminder] = React.useState<false | '2min' | '30sec'>(false);
 
   // Brainstorm field states
-  const [quick_ideas, set_quick_ideas] = React.useState('')
-  const [main_char, set_main_char] = React.useState('')
-  const [setting, set_setting] = React.useState('')
-  const [conflict, set_conflict] = React.useState('')
-  const [resolution, set_resolution] = React.useState('')
-  const [plot, set_plot] = React.useState('')
+  const [quick_ideas, set_quick_ideas] = useSessionDraft(draftKey && `${draftKey}:quick_ideas`, '')
+  const [main_char, set_main_char] = useSessionDraft(draftKey && `${draftKey}:main_char`, '')
+  const [setting, set_setting] = useSessionDraft(draftKey && `${draftKey}:setting`, '')
+  const [conflict, set_conflict] = useSessionDraft(draftKey && `${draftKey}:conflict`, '')
+  const [resolution, set_resolution] = useSessionDraft(draftKey && `${draftKey}:resolution`, '')
+  const [plot, set_plot] = useSessionDraft(draftKey && `${draftKey}:plot`, '')
   
   // Ref to track current brainstorm value without re-renders
   const valueRef = React.useRef(value);
@@ -365,8 +369,8 @@ const BrainstormView: React.FC<{ onNext: () => void; meta: SessionMeta; value: s
   React.useEffect(() => {
     if (!skip && !DEV_MODE && timeRemaining > 0) {
       const timer = setTimeout(() => {
-        setTimeRemaining(prev => {
-          const newTime = prev - 1;
+        setTimeRemaining(() => {
+          const newTime = Math.max(0, Math.ceil((brainstormDeadline - Date.now()) / 1000));
           // Show reminder at 2:00 and 0:30
           if (newTime === 120) {
             setShowReminder('2min');
@@ -1082,8 +1086,9 @@ export const WritingStudy: React.FC<{
   access?: AIAccess; preview?: boolean;
   onNext: (text: string, messages: ChatMessage[], record: WritingRecord) => void;
 }> = ({meta, brainstorm, sessionId, access = STUDY_AI_ACCESS, preview = false, onNext}) => {
-  const [rough, setRough] = useState<{text: string; messages: ChatMessage[]; completedAt: string} | null>(null);
-  const [roughSaved, setRoughSaved] = useState(false);
+  const draftKey = !preview && sessionId ? `${sessionId}:writing` : null;
+  const [rough, setRough] = useSessionDraft<{text: string; messages: ChatMessage[]; completedAt: string} | null>(draftKey && `${draftKey}:rough`, null);
+  const [roughSaved, setRoughSaved] = useSessionDraft(draftKey && `${draftKey}:saved`, false);
   const [saveError, setSaveError] = useState('');
   const [savingRough, setSavingRough] = useState(false);
   const phase = rough ? 'final' : 'rough';
@@ -1099,6 +1104,7 @@ export const WritingStudy: React.FC<{
     } catch { setSaveError('Your rough draft could not be saved. Please retry to continue. Your text is kept on this page.'); }
     finally { setSavingRough(false); }
   }
+  useEffect(() => {if (rough && !roughSaved) void saveRough(rough);}, []);
   if (rough && !roughSaved) return <Shell title="Saving your rough draft">
     {saveError ? <><p role="alert">{saveError}</p><button className="mt-4 border rounded-lg px-4 py-2" disabled={savingRough} onClick={() => saveRough(rough)}>Retry save</button></> : <p role="status">Saving… Your final-draft timer will start when saving is complete.</p>}
   </Shell>;
@@ -1141,14 +1147,15 @@ const EditorView: React.FC<{
   useEffect(() => {
     if (!preview) void studyApi({action: 'phase', sessionId, phase}).then(result => setDeadline(Date.parse(result.startedAt) + 600000)).catch(error => setPhaseError(error.message));
   }, [preview, sessionId, phase]);
-  const [text, setText] = useState(initialText);
+  const draftKey = !preview && sessionId ? `${sessionId}:editor:${phase}` : null;
+  const [text, setText] = useSessionDraft(draftKey && `${draftKey}:text`, initialText);
   const isAI = aiEnabled(meta.group, access, phase);
   const requestController = useRef<AbortController | null>(null);
   useEffect(() => () => requestController.current?.abort(), []);
-  const [aiMessages, setAiMessages] = useState<ChatMessage[]>(initialMessages);
-  const [chatDraft, setChatDraft] = useState(""); // Lift chat input state
+  const [aiMessages, setAiMessages] = useSessionDraft<ChatMessage[]>(draftKey && `${draftKey}:messages`, initialMessages);
+  const [chatDraft, setChatDraft] = useSessionDraft(draftKey && `${draftKey}:prompt`, ""); // Lift chat input state
   const [isAILoading, setIsAILoading] = useState(false); // Track if AI is responding
-  const [aiQueryCount, setAiQueryCount] = useState(previousQueries); // Track number of AI queries sent
+  const [aiQueryCount, setAiQueryCount] = useSessionDraft(draftKey && `${draftKey}:count`, previousQueries); // Track number of AI queries sent
   const MAX_AI_QUERIES = 15; // Maximum number of AI queries allowed per session
   const editorRef = useRef<HTMLTextAreaElement | null>(null);
   const TOTAL_TIME = DEV_MODE ? 30 : PHASE_SECONDS;
@@ -1158,7 +1165,7 @@ const EditorView: React.FC<{
   const [showReminder, setShowReminder] = useState<false | '5min' | '1min'>(false);
   const [wordCount, setWordCount] = useState(0);
   const [showConfirmation, setShowConfirmation] = useState(false);
-  const [hasUsedAI, setHasUsedAI] = useState(false); // Track if user has interacted with AI
+  const [hasUsedAI, setHasUsedAI] = useSessionDraft(draftKey && `${draftKey}:used`, false); // Track if user has interacted with AI
   const [showEditorEnabledMessage, setShowEditorEnabledMessage] = useState(false); // Show the enabled message
   const [showBrainstormOutline, setShowBrainstormOutline] = useState(true); // Control brainstorm visibility
   const [showTimeExpiredWarning, setShowTimeExpiredWarning] = useState(false); // Show warning when time is up but word count invalid
@@ -1231,7 +1238,7 @@ const EditorView: React.FC<{
     } else {
         // If word count is invalid, show warning and start grace period
         setShowTimeExpiredWarning(true);
-        setGraceTimeRemaining(DEV_MODE ? 30 : 3 * 60); // DEV: 30 seconds, PROD: 3 minutes grace period
+        setGraceTimeRemaining(Math.max(0, Math.ceil((deadline + (DEV_MODE ? 30000 : 180000) - Date.now()) / 1000))); // DEV: 30 seconds, PROD: 3 minutes grace period
       }
     }
   }, [timeRemaining, wordCount, text, aiMessages, onNext, phase, skip]);
@@ -1240,11 +1247,11 @@ const EditorView: React.FC<{
   React.useEffect(() => {
     if (!skip && graceTimeRemaining !== null && graceTimeRemaining > 0) {
       const timer = setTimeout(() => {
-        setGraceTimeRemaining(prev => prev! - 1);
+        setGraceTimeRemaining(Math.max(0, Math.ceil((deadline + (DEV_MODE ? 30000 : 180000) - Date.now()) / 1000)));
       }, 1000);
       return () => clearTimeout(timer);
     }
-  }, [graceTimeRemaining, skip]);
+  }, [graceTimeRemaining, skip, deadline]);
 
   // Handle grace period expiration - force submit regardless of word count
   React.useEffect(() => {
@@ -1787,6 +1794,34 @@ const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [totalViolations, setTotalViolations] = useState(0); // Track fullscreen violations
 
+  useEffect(() => {
+    if (loaded && sessionId && !localPreview) writeDraft(`${sessionId}:root`, {step, brainstorm, finalText, aiTranscript, attentionMeta, totalViolations, completionCode});
+  }, [loaded, sessionId, localPreview, step, brainstorm, finalText, aiTranscript, attentionMeta, totalViolations, completionCode]);
+
+  // Reattach to the saved generation after refresh, without making a duplicate model call.
+  useEffect(() => {
+    if (!loaded || localPreview || step !== 5 || !sessionId || recall.status === 'ready') return;
+    let disposed = false;
+    const poll = async () => {
+      try {
+        const result = await recallApi({action: 'status', sessionId});
+        if (disposed) return;
+        if (result.status === 'ready') setRecall({status: 'ready', data: result.data});
+        else if (result.status === 'missing' || result.retryable) setRecall({status: 'error', message: 'Your story is saved on this page. Please retry preparing your quiz.'});
+      } catch { /* Keep the current state during a temporary network interruption. */ }
+    };
+    void poll();
+    const timer = setInterval(poll, 5000);
+    return () => {disposed = true; clearInterval(timer);};
+  }, [loaded, localPreview, step, sessionId, recall.status]);
+  async function retryQuiz() {
+    setRecall({status: 'loading'});
+    try {
+      const data = await recallApi({action: 'generate', story: finalText, preview: localPreview, sessionId});
+      setRecall({status: 'ready', data});
+    } catch (error) {setRecall({status: 'error', message: error instanceof Error ? error.message : 'Please retry preparing your quiz.'});}
+  }
+
   // Attention tracking for brainstorm (step 3) and editor (step 4)
   const attn = useWritingAttention(!skip && (step === 3 || step === 4), {
     graceMs: 5000,
@@ -1848,6 +1883,13 @@ const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}
       }
       const started = await startStudy();
       setMeta({prolificId: started.prolificId, group: started.group, startedAt: todayISO(), aiAccess: started.aiAccess, testSession: started.testSession});
+      const saved = readDraft<any>(`${started.sessionId}:root`, null);
+      if (saved) {
+        setStep(saved.step); setBrainstorm(saved.brainstorm); setFinalText(saved.finalText);
+        setAiTranscript(saved.aiTranscript); setAttentionMeta(saved.attentionMeta);
+        setTotalViolations(saved.totalViolations); setCompletionCode(saved.completionCode);
+      }
+      if (started.completed) {setStep(4.1); setCompletionCode(started.completionCode);}
       setSessionId(started.sessionId);
       setLoaded(true);
       } catch (error: any) {
@@ -2246,7 +2288,7 @@ const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}
       console.log("Violation", n);
       setTotalViolations(n);
     }}>
-    <PostTaskSurvey hasAI={meta.group.startsWith("AI") && (meta.aiAccess ?? access) !== "neither"} aiAccess={meta.aiAccess ?? access} recall={recall} preview={localPreview} sessionId={sessionId} onSubmit={onFinishSurvey} />
+    <PostTaskSurvey hasAI={meta.group.startsWith("AI") && (meta.aiAccess ?? access) !== "neither"} aiAccess={meta.aiAccess ?? access} recall={recall} onRetryQuiz={retryQuiz} preview={localPreview} sessionId={sessionId} onSubmit={onFinishSurvey} />
   </ComplianceGate>
 )}
 
