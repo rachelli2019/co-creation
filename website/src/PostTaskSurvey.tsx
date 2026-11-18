@@ -77,8 +77,9 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
     if (q.kind === 'choice') return typeof v === 'string' && q.choices?.includes(v);
     return q.kind === 'text' ? typeof v === 'string' && !!v.trim() : typeof v === 'number' && Number.isInteger(v) && v >= (q.kind === 'credit' ? 0 : q.min!) && v <= (q.kind === 'credit' ? 100 : q.max!);
   });
+  const canContinue = valid || (isRecall && skip);
   async function next() {
-    if (!valid && !skip) return;
+    if (!canContinue) return;
     if (!isRecall && page < pages.length - 1) {setPage(p => p + 1); return;}
     if (saving) return;
     setSaving(true); setError('');
@@ -114,8 +115,8 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
     {error && <p role="alert" className="text-red-700 mt-6">{error}</p>}
     <div className="flex justify-between items-center mt-8 gap-4">
       <button hidden={isRecall} disabled={page === 0 || saving} className="border rounded-lg px-4 py-2 disabled:opacity-40" onClick={() => setPage(p => p - 1)}>Back</button>
-      <button disabled={(!valid && !skip) || saving} className="bg-black text-white rounded-lg px-5 py-2 disabled:bg-gray-300" onClick={next}>{saving ? 'Saving…' : isRecall ? 'Submit quiz' : page === pages.length - 1 ? 'Submit survey' : 'Continue'}</button>
+      <button disabled={!canContinue || saving} className="bg-black text-white rounded-lg px-5 py-2 disabled:bg-gray-300" onClick={next}>{saving ? 'Saving…' : isRecall ? 'Submit quiz' : page === pages.length - 1 ? 'Submit survey' : 'Continue'}</button>
     </div>
-    {!valid && !skip && <p className="text-sm text-gray-500 mt-3">Please answer every question on this page to continue.</p>}
+    {!canContinue && <p className="text-sm text-gray-500 mt-3">Please answer every question on this page to continue.</p>}
   </main></div>;
 }

@@ -32,7 +32,7 @@ export default function StudyAccess({children,walkthrough}:{children:ReactNode;w
   } catch(e) {history.replaceState(null,'',previous);setError(e instanceof Error?e.message:'Unable to start preview.');setBusy(false);}
  }
  if(ready && isWalkthrough)return walkthrough;
- if(ready && dataKind === 'preview') return <PreviewMode.Provider value={true}><div className="bg-amber-50 p-4 text-sm"><strong>Live preview</strong> — real AI and saved data, labeled preview. Timers and required survey answers can be skipped.
+ if(ready && dataKind === 'preview') return <PreviewMode.Provider value={true}><div className="bg-amber-50 p-4 text-sm"><strong>Live preview</strong> — real AI and saved data, labeled preview. Timers can be skipped. Survey answers are required.
  <div className="flex flex-wrap gap-3 mt-2"><label>Condition <select className="border p-2 rounded" value={new URLSearchParams(location.search).get('condition') || 'both'} disabled={busy} onChange={e=>void restart(e.target.value)}><option value="rough">Rough only</option><option value="final">Final only</option><option value="both">Both drafts</option><option value="random-noun">Random noun · Both drafts</option></select></label>
  <button className="border px-3 rounded" disabled={busy} onClick={()=>void restart()}>Start fresh preview</button></div>{error && <p role="alert">{error}</p>}</div>{children}</PreviewMode.Provider>;
  if(ready)return <>{testSession && <div className="bg-amber-50 p-2 text-center text-sm">{dataKind === 'pilot' ? 'Lab pilot' : 'Researcher test'} — real AI replies and data storage. Not a paid Prolific submission.</div>}{children}</>;
