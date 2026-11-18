@@ -21,10 +21,10 @@ export async function dispatch(path,body,req,env,allowPreview=false) {
  const session=await requireSession(req.headers.cookie,body||{},env);
  if(!session || session.finished_at || body?.preview) return {status:403,data:{error:'A valid study session is required'}};
  if(body.action==='save_record' && body.kind==='rough_draft') {
-  if(!session.rough_started_at || Date.now()<Date.parse(session.rough_started_at)+600000) return {status:403,data:{error:'The rough draft section has not ended yet.'}};
+  if(!session.rough_started_at || (session.data_kind !== 'preview' && Date.now()<Date.parse(session.rough_started_at)+600000)) return {status:403,data:{error:'The rough draft section has not ended yet.'}};
   body.payload={...body.payload,aiAccess:session.ai_access,phaseSeconds:600,completedAt:new Date().toISOString()};
  }
- if(body.action==='generate' && (!session.final_started_at || Date.now()<Date.parse(session.final_started_at)+300000)) return {status:403,data:{error:'Please complete the final draft section first.'}};
+ if(body.action==='generate' && (!session.final_started_at || (session.data_kind !== 'preview' && Date.now()<Date.parse(session.final_started_at)+300000))) return {status:403,data:{error:'Please complete the final draft section first.'}};
  return recallRequest({...body,sessionId:session.id},{env});
 }
 export async function handle(req,res,{env=process.env,allowPreview=false,path=req.url?.split('?')[0]}={}) {

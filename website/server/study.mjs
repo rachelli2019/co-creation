@@ -12,7 +12,7 @@ export function phaseAllowed(session, phase, now=Date.now()) {
  const start = session[`${phase}_started_at`];
  return ['rough','final'].includes(phase) && !session.finished_at && !session.revoked && start &&
   (phase !== 'rough' || !session.final_started_at) &&
-  (session.ai_access === 'both' || session.ai_access === phase) && now < Date.parse(start)+600000;
+  (session.ai_access === 'both' || session.ai_access === phase) && (session.data_kind === 'preview' || now < Date.parse(start)+600000);
 }
 export async function verifyProlific(body,env,fetchImpl=fetch) {
  if (!env.PROLIFIC_API_TOKEN || body.studyId !== env.PROLIFIC_STUDY_ID ||
@@ -29,29 +29,31 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
   if (!body || typeof body.action !== 'string') return {status:400,data:{error:'Invalid request'}};
   if (body.action === 'start') {
    if (env.STUDY_ENROLLMENT_OPEN !== 'true') return denied();
-   const manualAllowed = ['walkthrough', 'test'].includes(env.STUDY_MODE) || env.STUDY_ALLOW_CONDITION_OVERRIDE === 'true';
+   const manualAllowed = ['walkthrough', 'test', 'preview'].includes(env.STUDY_MODE) || env.STUDY_ALLOW_CONDITION_OVERRIDE === 'true';
    const condition = body.condition;
    if (condition != null && condition !== '') {
     if (!manualAllowed) return denied('Manual condition links are not enabled for this study.');
     if (!['rough', 'final', 'both', 'random-noun'].includes(condition)) return {status:400,data:{error:'Condition must be rough, final, both, or random-noun.'}};
    }
    const nounOverride = body.noun || null;
-   if (nounOverride && (!['test','walkthrough'].includes(env.STUDY_MODE) || condition !== 'random-noun' || !NOUNS.includes(nounOverride))) return denied('Noun overrides are available only for random-noun pilot tests and must use a listed noun.');
+   if (nounOverride && (!['test','walkthrough','preview'].includes(env.STUDY_MODE) || condition !== 'random-noun' || !NOUNS.includes(nounOverride))) return denied('Noun overrides are available only for random-noun pilot tests and must use a listed noun.');
    if (env.STUDY_MODE === 'walkthrough') {
     const previous = readSession(cookie, env);
     const id = previous?.mode === 'walkthrough' ? previous.id : randomUUID();
     const signed = issueSession(id,env,Date.now(),'walkthrough');
     return {...ok({walkthrough:true,testSession:true,prolificId:'PREVIEW',group:'AI-DIV',aiAccess:condition === 'random-noun' ? 'both' : condition || 'both'}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
    }
+   const dataKind = env.STUDY_MODE === 'preview' ? 'preview' : env.STUDY_MODE === 'prolific' ? 'main' : env.STUDY_DATA_KIND === 'pilot' ? 'pilot' : 'test';
    const existing = await requireSession(cookie,{},env);
-   if (existing) {
+   if (existing && !(env.STUDY_MODE === 'preview' && (body.restartPreview === true || (condition && (existing.condition || existing.ai_access) !== condition) || (nounOverride && existing.assigned_noun !== nounOverride)))) {
+    if ((existing.data_kind || 'test') !== dataKind) return denied('Please open this study in a separate browser profile.');
     if (condition && (existing.condition || existing.ai_access) !== condition) return denied('This session already has a different condition. Use a separate browser profile for a new test session; an existing participant cannot switch conditions.');
     if (nounOverride && existing.assigned_noun !== nounOverride) return denied('This session already has a noun. Use a separate browser profile for a new pilot test.');
-    return ok({sessionId:existing.id,prolificId:existing.prolific_id,group:existing.group_key,aiAccess:existing.ai_access,testSession:existing.test_session,completed:!!existing.finished_at,completionCode:existing.finished_at && !existing.test_session ? env.PROLIFIC_COMPLETION_CODE : null});
+    return ok({sessionId:existing.id,prolificId:existing.prolific_id,group:existing.group_key,aiAccess:existing.ai_access,testSession:existing.test_session,dataKind:existing.data_kind,completed:!!existing.finished_at,completionCode:existing.finished_at && !existing.test_session ? env.PROLIFIC_COMPLETION_CODE : null});
    }
-   const test = env.STUDY_MODE === 'test';
+   const test = ['test','preview'].includes(env.STUDY_MODE);
    if (!test && !/^[A-Z0-9]{6,16}$/.test(env.PROLIFIC_COMPLETION_CODE || '')) return denied('Study completion is not configured.');
-   if (test ? env.STUDY_TEST_OPEN_ENTRY !== 'true' && !equalSecret(body.invite,env.STUDY_INVITE_CODE) : env.STUDY_MODE !== 'prolific' || !await verifyProlific(body,env)) return denied('Please use your authorized study invitation.');
+   if (test ? env.STUDY_MODE !== 'preview' && env.STUDY_TEST_OPEN_ENTRY !== 'true' && !equalSecret(body.invite,env.STUDY_INVITE_CODE) : env.STUDY_MODE !== 'prolific' || !await verifyProlific(body,env)) return denied('Please use your authorized study invitation.');
    const id = randomUUID(), prolificId = test ? `TEST-${randomUUID()}` : body.prolificId;
    const signed = issueSession(id,env);
    const selectedCondition = (manualAllowed && condition) || env.STUDY_CONDITION || env.STUDY_AI_ACCESS || 'both';
@@ -59,9 +61,9 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    if (!['rough','final','both','neither'].includes(access)) throw new Error('Invalid AI schedule');
    const group = 'AI-DIV';
    if (selectedCondition === 'random-noun') {
-    const enrolled = await rows(env,'rpc/enroll_random_noun',{method:'POST',body:JSON.stringify({
+    const enrolled = await rows(env,'rpc/enroll_random_noun_v2',{method:'POST',body:JSON.stringify({
      p_id:id,p_participant:prolificId,p_test:test,p_submission:test?null:body.prolificSessionId,
-     p_pool:test?'pilot':`main:${env.PROLIFIC_STUDY_ID}`,p_override:nounOverride,p_nouns:NOUNS,
+     p_kind:dataKind,p_pool:test?dataKind:`main:${env.PROLIFIC_STUDY_ID}`,p_override:nounOverride,p_nouns:NOUNS,
      p_prompt:NOUN_PROMPT,p_version:NOUN_PROMPT_VERSION,p_model:env.WRITING_MODEL||'gpt-6-luna'
     })});
     if (!enrolled[0]?.assigned_noun) throw new Error('Could not assign noun');
@@ -69,9 +71,9 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    const participant = await database(env,'participants',{method:'POST',body:JSON.stringify({prolific_id:prolificId,group_key:group})});
    if (participant.status === 409) return denied('This participant has already started the study. Please contact the researcher.');
    if (!participant.ok) throw new Error('Could not enroll');
-   await rows(env,'sessions',{method:'POST',body:JSON.stringify({id,prolific_id:prolificId,group_key:group,ai_access:access,test_session:test,prolific_submission_id:test?null:body.prolificSessionId,expires_at:new Date(Date.now()+7200000).toISOString()})});
+   await rows(env,'sessions',{method:'POST',body:JSON.stringify({id,prolific_id:prolificId,group_key:group,ai_access:access,condition:selectedCondition,test_session:test,data_kind:dataKind,prolific_submission_id:test?null:body.prolificSessionId,expires_at:new Date(Date.now()+7200000).toISOString()})});
    }
-   return {...ok({sessionId:id,prolificId,group,aiAccess:access,testSession:test}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
+   return {...ok({sessionId:id,prolificId,group,aiAccess:access,testSession:test,dataKind}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
   }
   if (env.STUDY_MODE === 'walkthrough') return denied('Preview does not save study data.');
   const session = await requireSession(cookie,body,env);
@@ -120,9 +122,9 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    const quiz=(await rows(env,`recall_generations?session_id=eq.${session.id}&select=story,responses`))[0];
    const survey=(await rows(env,`study_records?session_id=eq.${session.id}&kind=eq.survey&select=payload`))[0];
    const rough=(await rows(env,`study_records?session_id=eq.${session.id}&kind=eq.rough_draft&select=payload`))[0];
-   if(!quiz?.responses||!survey||!rough) return denied('Please submit the survey and quiz first.');
+   if((!quiz?.responses && !(session.data_kind === 'preview' && quiz?.story))||!survey||!rough) return denied('Please submit the survey and quiz first.');
    const chat=await rows(env,`ai_requests?session_id=eq.${session.id}&order=request_number.asc&select=prompt,response`);
-   const payload={session_id:session.id,brainstorm_text:rough.payload.brainstorm||'',final_text:quiz.story,word_count:quiz.story.trim().split(/\s+/).length,attention_meta:body.attentionMeta||{},survey_responses:{...survey.payload,quiz:quiz.responses},ai_transcript:chat.flatMap(x=>[{role:'user',content:x.prompt},...(x.response?[{role:'assistant',content:x.response}]:[])])};
+   const payload={session_id:session.id,brainstorm_text:rough.payload.brainstorm||'',final_text:quiz.story,word_count:quiz.story.trim().split(/\s+/).length,attention_meta:body.attentionMeta||{},survey_responses:{...survey.payload,quiz:quiz.responses || {status:'skipped_preview'}},ai_transcript:chat.flatMap(x=>[{role:'user',content:x.prompt},...(x.response?[{role:'assistant',content:x.response}]:[])])};
    await rows(env,'submissions?on_conflict=session_id',{method:'POST',headers:{Prefer:'resolution=ignore-duplicates,return=representation'},body:JSON.stringify(payload)});
    await rows(env,`sessions?id=eq.${session.id}&finished_at=is.null`,{method:'PATCH',body:JSON.stringify({finished_at:new Date().toISOString()})});
    return ok({saved:true,completionCode:session.test_session?null:env.PROLIFIC_COMPLETION_CODE});

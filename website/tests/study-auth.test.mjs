@@ -95,3 +95,18 @@ test('manual condition links select and store pilot schedules, reject invalid va
  assert.equal((await studyRequest({action:'start',condition:'rough'},{env:{...settings,STUDY_MODE:'prolific'}})).status,403);
  assert.equal(records.length,before);
 });
+
+test('server chooses preview/pilot/test labels, ignores client main label, and only previews bypass duration',async t=>{
+ let saved;
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(options.method==='POST' && url.endsWith('/sessions'))saved=JSON.parse(options.body);
+  return Response.json([]);
+ });
+ for(const [mode,kind,expected] of [['preview',undefined,'preview'],['test','pilot','pilot'],['test',undefined,'test']]){
+  const response=await studyRequest({action:'start',dataKind:'main'},{env:{...env,STUDY_MODE:mode,STUDY_DATA_KIND:kind,STUDY_TEST_OPEN_ENTRY:'true',STUDY_ENROLLMENT_OPEN:'true'}});
+  assert.equal(response.status,200);assert.equal(response.data.dataKind,expected);assert.equal(saved.data_kind,expected);
+ }
+ const session={ai_access:'both',rough_started_at:new Date(1000).toISOString()};
+ assert.ok(phaseAllowed({...session,data_kind:'preview'},'rough',700000));
+ for(const kind of ['pilot','test','main'])assert.ok(!phaseAllowed({...session,data_kind:kind},'rough',700000));
+});

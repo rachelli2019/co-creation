@@ -1119,6 +1119,7 @@ export const WritingStudy: React.FC<{
         void saveRough(artifact);
         window.scrollTo(0, 0);
       } else {
+        if (!text.trim()) {window.alert('Write or add a story before continuing to the survey and quiz.'); return;}
         const finalMessages = effectiveAccess === 'both' ? messages.slice(rough.messages.length) : messages;
         onNext(text, [...rough.messages, ...finalMessages], {
           roughDraft: rough.text, roughCompletedAt: rough.completedAt, finalCompletedAt: todayISO(),
