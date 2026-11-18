@@ -91,7 +91,7 @@ test('manual condition links select and store pilot schedules, reject invalid va
   assert.equal((await studyRequest({action:'start',condition:condition==='both'?'rough':'both'},{env:settings,cookie})).status,403);
  }
  const before=records.length;
- assert.equal((await studyRequest({action:'start',condition:'random-noun'},{env:settings})).status,400);
+ assert.equal((await studyRequest({action:'start',condition:'invalid-condition'},{env:settings})).status,400);
  assert.equal((await studyRequest({action:'start',condition:'rough'},{env:{...settings,STUDY_MODE:'prolific'}})).status,403);
  assert.equal(records.length,before);
 });

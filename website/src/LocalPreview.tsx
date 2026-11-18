@@ -5,7 +5,8 @@ import { accessLabels, parseAIAccess } from './writingConfig';
 import type { AIAccess } from './writingConfig';
 
 export default function LocalPreview() {
-  const [access, setAccess] = useState<AIAccess>(() => parseAIAccess(new URLSearchParams(window.location.search).get('condition') || import.meta.env.VITE_WRITING_AI_ACCESS));
+  const [condition, setCondition] = useState(() => new URLSearchParams(window.location.search).get('condition') || import.meta.env.VITE_WRITING_AI_ACCESS || 'both');
+  const access: AIAccess = condition === 'random-noun' ? 'both' : parseAIAccess(condition);
   const [skipTimers, setSkipTimers] = useState(!import.meta.env.DEV);
   const [run, setRun] = useState(0);
   const [startAt, setStartAt] = useState<1 | 4>(1);
@@ -14,9 +15,10 @@ export default function LocalPreview() {
       <strong>{import.meta.env.DEV ? 'Local study test' : 'Study preview'}</strong> · Same study screens. Page-through mode also disables focus and fullscreen checks. AI writing assistant replies are simulated; no database writes.
       <div className="flex flex-wrap gap-3 items-center mt-2">
         <label htmlFor="ai-access">AI writing assistant access</label>
-        <select id="ai-access" className="border rounded p-2 bg-white" value={access}
-          onChange={e => {setAccess(e.target.value as AIAccess); setRun(n => n + 1);}}>
+        <select id="ai-access" className="border rounded p-2 bg-white" value={condition}
+          onChange={e => {setCondition(e.target.value); setRun(n => n + 1);}}>
           {Object.entries(accessLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        <option value="random-noun">Random noun · Both drafts</option>
         </select>
         <button className="border rounded px-3 py-2" onClick={() => {setStartAt(1); setRun(n => n + 1);}}>Restart full study</button>
         <button className="border rounded px-3 py-2" onClick={() => {setStartAt(4); setRun(n => n + 1);}}>Test writing section directly</button>

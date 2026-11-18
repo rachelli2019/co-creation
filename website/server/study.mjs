@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {database, equalSecret, issueSession, requireSession, readSession, COOKIE} from './study-auth.mjs';
-import {WRITING_PROMPT} from './writing-prompt.mjs';
+import {NOUNS, NOUN_PROMPT, NOUN_PROMPT_VERSION, writingPrompt} from './random-noun.mjs';
 const ok = data => ({status:200,data});
 const denied = (error='This study link is not currently available.') => ({status:403,data:{error}});
 async function rows(env,path,options) {
@@ -33,17 +33,20 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    const condition = body.condition;
    if (condition != null && condition !== '') {
     if (!manualAllowed) return denied('Manual condition links are not enabled for this study.');
-    if (!['rough', 'final', 'both'].includes(condition)) return {status:400,data:{error:'Condition must be rough, final, or both. The random-noun condition is not available yet.'}};
+    if (!['rough', 'final', 'both', 'random-noun'].includes(condition)) return {status:400,data:{error:'Condition must be rough, final, both, or random-noun.'}};
    }
+   const nounOverride = body.noun || null;
+   if (nounOverride && (!['test','walkthrough'].includes(env.STUDY_MODE) || condition !== 'random-noun' || !NOUNS.includes(nounOverride))) return denied('Noun overrides are available only for random-noun pilot tests and must use a listed noun.');
    if (env.STUDY_MODE === 'walkthrough') {
     const previous = readSession(cookie, env);
     const id = previous?.mode === 'walkthrough' ? previous.id : randomUUID();
     const signed = issueSession(id,env,Date.now(),'walkthrough');
-    return {...ok({walkthrough:true,testSession:true,prolificId:'PREVIEW',group:'AI-DIV',aiAccess:condition || 'both'}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
+    return {...ok({walkthrough:true,testSession:true,prolificId:'PREVIEW',group:'AI-DIV',aiAccess:condition === 'random-noun' ? 'both' : condition || 'both'}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
    }
    const existing = await requireSession(cookie,{},env);
    if (existing) {
-    if (condition && existing.ai_access !== condition) return denied('This session already has a different condition. Use a separate browser profile for a new test session; an existing participant cannot switch conditions.');
+    if (condition && (existing.condition || existing.ai_access) !== condition) return denied('This session already has a different condition. Use a separate browser profile for a new test session; an existing participant cannot switch conditions.');
+    if (nounOverride && existing.assigned_noun !== nounOverride) return denied('This session already has a noun. Use a separate browser profile for a new pilot test.');
     return ok({sessionId:existing.id,prolificId:existing.prolific_id,group:existing.group_key,aiAccess:existing.ai_access,testSession:existing.test_session,completed:!!existing.finished_at,completionCode:existing.finished_at && !existing.test_session ? env.PROLIFIC_COMPLETION_CODE : null});
    }
    const test = env.STUDY_MODE === 'test';
@@ -51,13 +54,23 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    if (test ? env.STUDY_TEST_OPEN_ENTRY !== 'true' && !equalSecret(body.invite,env.STUDY_INVITE_CODE) : env.STUDY_MODE !== 'prolific' || !await verifyProlific(body,env)) return denied('Please use your authorized study invitation.');
    const id = randomUUID(), prolificId = test ? `TEST-${randomUUID()}` : body.prolificId;
    const signed = issueSession(id,env);
-   const access = (manualAllowed && condition) || env.STUDY_AI_ACCESS || 'both';
+   const selectedCondition = (manualAllowed && condition) || env.STUDY_CONDITION || env.STUDY_AI_ACCESS || 'both';
+   const access = selectedCondition === 'random-noun' ? 'both' : selectedCondition;
    if (!['rough','final','both','neither'].includes(access)) throw new Error('Invalid AI schedule');
    const group = 'AI-DIV';
+   if (selectedCondition === 'random-noun') {
+    const enrolled = await rows(env,'rpc/enroll_random_noun',{method:'POST',body:JSON.stringify({
+     p_id:id,p_participant:prolificId,p_test:test,p_submission:test?null:body.prolificSessionId,
+     p_pool:test?'pilot':`main:${env.PROLIFIC_STUDY_ID}`,p_override:nounOverride,p_nouns:NOUNS,
+     p_prompt:NOUN_PROMPT,p_version:NOUN_PROMPT_VERSION,p_model:env.WRITING_MODEL||'gpt-6-luna'
+    })});
+    if (!enrolled[0]?.assigned_noun) throw new Error('Could not assign noun');
+   } else {
    const participant = await database(env,'participants',{method:'POST',body:JSON.stringify({prolific_id:prolificId,group_key:group})});
    if (participant.status === 409) return denied('This participant has already started the study. Please contact the researcher.');
    if (!participant.ok) throw new Error('Could not enroll');
    await rows(env,'sessions',{method:'POST',body:JSON.stringify({id,prolific_id:prolificId,group_key:group,ai_access:access,test_session:test,prolific_submission_id:test?null:body.prolificSessionId,expires_at:new Date(Date.now()+7200000).toISOString()})});
+   }
    return {...ok({sessionId:id,prolificId,group,aiAccess:access,testSession:test}),cookie:`${COOKIE}=${signed}; HttpOnly; SameSite=Strict; Path=/; Max-Age=7200${secure?'; Secure':''}`};
   }
   if (env.STUDY_MODE === 'walkthrough') return denied('Preview does not save study data.');
@@ -96,7 +109,7 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    }
    if(!slot) return {status:429,data:{error:'The AI request limit has been reached.'}};
    const history = previous.filter(x=>x.response && (session.ai_access==='both'||x.phase===body.phase)).flatMap(x=>[{role:'user',content:x.prompt},{role:'assistant',content:x.response}]);
-   const response = await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${env.OPENAI_API_KEY}`},body:JSON.stringify({model:env.WRITING_MODEL||'gpt-6-luna',store:false,reasoning_effort:'low',messages:[{role:'system',content:WRITING_PROMPT},...history,{role:'user',content:body.message}]})});
+   const response = await fetch('https://api.openai.com/v1/chat/completions',{method:'POST',signal:AbortSignal.timeout(45000),headers:{'Content-Type':'application/json',Authorization:`Bearer ${env.OPENAI_API_KEY}`},body:JSON.stringify({model:session.writing_model||env.WRITING_MODEL||'gpt-6-luna',store:false,reasoning_effort:'low',messages:[{role:'system',content:writingPrompt(session)},...history,{role:'user',content:body.message}]})});
    if(!response.ok) throw new Error('Writing provider failed');
    const data=await response.json(), content=data.choices?.[0]?.message?.content;
    if(typeof content!=='string'||!content) throw new Error('Empty writing response');

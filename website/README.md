@@ -123,3 +123,29 @@ An isolated CLI test deployment overrides `STUDY_MODE=test`, `STUDY_TEST_OPEN_EN
 Run `TEST_STUDY_URL=https://YOUR-TEST-DEPLOYMENT node tests/hosted-live-smoke.mjs` from `website` to perform an explicitly opted-in integration test. It uses the local server-only Supabase configuration to inspect retained synthetic records and advance only its freshly created test session’s timestamps. It makes two real Luna writing calls and one real Sol quiz call, checks conversation persistence across phases, saves the survey while quiz generation runs, verifies immutable quiz scoring and final submission, and confirms all seven tables reject browser-key reads. The full test passed with these exact models.
 
 The final-story request first persists an immutable pending record in `recall_generations`, confirms the stored story, and only then calls the quiz model. The UI displays the survey without waiting for the generation response. A unique session key prevents duplicate model calls; a failed story save never calls the model. This is an HTTP request running concurrently with the survey, not a durable job queue; interrupted/failed generations and page-refresh recovery still need further work before recruitment.
+
+### Random-noun writing assistant
+
+Apply `server/random-noun-schema.sql` to the private Supabase project before using
+this condition. It adds private session metadata and a service-role-only enrollment
+function. The noun list and verbatim prompt are in `server/random-noun.mjs`.
+
+For real lab-pilot sessions, use the real-backend test deployment with
+`?condition=random-noun`. Optionally append `&noun=leek` (or any listed noun).
+The pilot uses real AI, timers and storage. The walkthrough deployment still
+simulates replies; its random-noun selector only previews the both-phase UI.
+
+Pilot nouns are selected from unused pilot nouns first; explicit pilot overrides
+may repeat, and the pilot can reuse nouns after its pool is exhausted. Main-study
+nouns are allocated without replacement within the Prolific study ID. An advisory
+transaction lock serializes enrollment and a partial unique index independently
+prevents duplicate main-study nouns. Exhaustion fails enrollment instead of reusing.
+Pilot allocations never consume main-study nouns. Changing a URL cannot change an
+existing session's condition or noun; use a separate browser profile for another test.
+
+Sessions store the noun, pool, condition, exact interpolated prompt, prompt version,
+and writing model. These values remain server-side. Both draft phases use this saved
+prompt and shared conversation history, including requests to remove/change the noun.
+Quiz generation is unchanged. Main-study noun URL overrides are always rejected.
+The four-way randomized condition assignment is a separate, not-yet-implemented step;
+`STUDY_CONDITION=random-noun` can select this condition server-side for controlled runs.
