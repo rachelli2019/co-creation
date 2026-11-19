@@ -1096,12 +1096,13 @@ export const WritingStudy: React.FC<{
   async function saveRough(artifact: NonNullable<typeof rough>) {
     setSavingRough(true); setSaveError('');
     try {
+      if (!preview) await studyApi({action: 'phase', sessionId, phase: 'rough'});
       await recallApi({action: 'save_record', kind: 'rough_draft', preview, sessionId, payload: {
         text: artifact.text, transcript: artifact.messages, completedAt: artifact.completedAt,
         aiAccess: effectiveAccess, phaseSeconds: DEV_MODE ? 30 : PHASE_SECONDS, brainstorm,
       }});
       setRoughSaved(true);
-    } catch { setSaveError('Your rough draft could not be saved. Please retry to continue. Your text is kept on this page.'); }
+    } catch (error) { setSaveError(`Your rough draft could not be saved: ${error instanceof Error ? error.message : 'Unknown error'}. Your text is kept on this page. Please retry to continue.`); }
     finally { setSavingRough(false); }
   }
   useEffect(() => {if (rough && !roughSaved) void saveRough(rough);}, []);
@@ -1361,6 +1362,7 @@ const EditorView: React.FC<{
     // Call OpenAI API
     try {
       requestController.current = new AbortController();
+      await studyApi({action: 'phase', sessionId, phase}, requestController.current.signal);
       const data = await studyApi({action: 'chat', sessionId, phase, message}, requestController.current.signal);
       const assistantMessage = data.content;
       
