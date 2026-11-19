@@ -1,1 +1,22 @@
 @import "tailwindcss";
+.thinking-label {
+  background: linear-gradient(100deg, #6b7280 30%, #c4c8ce 48%, #6b7280 66%);
+  background-size: 240% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: thinking-shimmer 2.2s linear infinite;
+}
+.thinking-dot { animation: thinking-breathe 1.8s ease-in-out infinite; }
+@keyframes thinking-shimmer {
+  from { background-position: 160% 0; }
+  to { background-position: -80% 0; }
+}
+@keyframes thinking-breathe {
+  0%, 100% { opacity: .45; transform: scale(.85); }
+  50% { opacity: 1; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking-label { animation: none; background: none; color: #6b7280; }
+  .thinking-dot { animation: none; }
+}

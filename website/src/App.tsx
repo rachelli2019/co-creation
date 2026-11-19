@@ -1003,16 +1003,9 @@ const AIChatPanel: React.FC<{
           </div>
         ))}
         {isLoading && (
-          <div className="mr-3 rounded-2xl border border-blue-100 bg-blue-50 p-3">
-            <div className="text-xs uppercase tracking-wide opacity-60">assistant</div>
-            <div className="flex items-center gap-2 text-gray-600">
-              <div className="flex gap-1">
-                <span className="animate-bounce" style={{ animationDelay: '0ms' }}>●</span>
-                <span className="animate-bounce" style={{ animationDelay: '150ms' }}>●</span>
-                <span className="animate-bounce" style={{ animationDelay: '300ms' }}>●</span>
-      </div>
-              <span className="text-sm">The AI writing assistant is thinking...</span>
-            </div>
+          <div role="status" aria-live="polite" className="flex items-center gap-2.5 px-3 py-3 text-sm text-gray-500">
+            <span aria-hidden="true" className="thinking-dot h-2 w-2 shrink-0 rounded-full bg-gray-700" />
+            <span className="thinking-label">Thinking…</span>
           </div>
         )}
         {isLimitReached && (
