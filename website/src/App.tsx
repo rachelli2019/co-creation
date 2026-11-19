@@ -137,7 +137,7 @@ interface SessionMeta {
 }
 
 // ---- Shared Containers ----
-const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React.ReactNode; onPreviewNext?: () => void }>=({ title, children, footer, onPreviewNext }) => {
+const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React.ReactNode; onPreviewNext?: () => void; wide?: boolean }>=({ title, children, footer, onPreviewNext, wide = false }) => {
   const skip = usePageThrough();
   return (
   <div className="min-h-screen bg-gray-50 text-gray-900">
@@ -146,7 +146,7 @@ const Shell: React.FC<{ title: string; children: React.ReactNode; footer?: React
         🚧 DEVELOPMENT MODE - Shortened timers
       </div>
     )}
-    <div className="max-w-5xl mx-auto px-4 py-6">
+    <div className={`${wide ? 'max-w-[1600px]' : 'max-w-5xl'} mx-auto px-4 sm:px-6 py-6`}>
       <header className="mb-6">
         <h1 className="text-2xl font-bold">{title}</h1>
       </header>
@@ -1425,6 +1425,7 @@ const EditorView: React.FC<{
   return (
     <Shell
       onPreviewNext={() => onNext(text, aiMessages)}
+      wide
       title={phase === "rough" ? "Step 2 · Rough draft" : "Step 3 · Final draft"}
       footer={
         <div className="flex flex-col items-center gap-4">
@@ -1648,7 +1649,7 @@ const EditorView: React.FC<{
       )}
 
       {isAI && timeRemaining > 0 ? (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-6">
           <div className="h-[clamp(560px,75vh,720px)] min-w-0 border rounded-2xl p-4">{EditorBox}</div>
           <div className="h-[clamp(560px,75vh,720px)] min-w-0 border rounded-2xl p-4">
             <AIChatPanel 
