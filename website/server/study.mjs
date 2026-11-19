@@ -78,6 +78,17 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
   if (env.STUDY_MODE === 'walkthrough') return denied('Preview does not save study data.');
   const session = await requireSession(cookie,body,env);
   if (!session) return denied('A valid study session is required.');
+  if(body.action === 'events') {
+   const uuid=/^[a-f0-9-]{36}$/i;
+   if(!Array.isArray(body.items)||body.items.length>50||body.items.some(x=>
+    !uuid.test(x.event_id)||!uuid.test(x.stream_id)||!Number.isSafeInteger(x.sequence)||x.sequence<1||
+    !Number.isFinite(x.elapsed_ms)||x.elapsed_ms<0||!Number.isFinite(Date.parse(x.client_at))||
+    !['rough','final'].includes(x.phase)||!['keydown','keyup','edit','focus','blur','selection','shortcut','chat_submit','chat_response_displayed','chat_error','phase_open','checkpoint','visibility'].includes(x.type)||
+    !['draft','chat','page'].includes(x.target)||!x.payload||typeof x.payload!=='object'||Array.isArray(x.payload)||JSON.stringify(x.payload).length>150000
+   ))return {status:400,data:{error:'Invalid interaction events'}};
+   if(body.items.length)await rows(env,'interaction_events?on_conflict=event_id',{method:'POST',headers:{Prefer:'resolution=ignore-duplicates,return=representation'},body:JSON.stringify(body.items.map(x=>({event_id:x.event_id,session_id:session.id,stream_id:x.stream_id,sequence:x.sequence,client_at:x.client_at,elapsed_ms:x.elapsed_ms,phase:x.phase,type:x.type,target:x.target,payload:x.payload,version:1})))});
+   return ok({saved:true});
+  }
   if (session.finished_at) return body.action === 'finish' ? ok({saved:true,completionCode:session.test_session?null:env.PROLIFIC_COMPLETION_CODE}) : denied('This session is complete.');
   if (body.action === 'ban') {
    await rows(env,`sessions?id=eq.${session.id}`,{method:'PATCH',body:JSON.stringify({revoked:true})});
@@ -95,7 +106,7 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
   }
   if (body.action === 'snapshots') {
    if (!Array.isArray(body.items) || body.items.length > 100 || body.items.some(x=>!['brainstorm','writing'].includes(x.phase)||!['main','chat'].includes(x.textbox)||typeof x.text!=='string'||x.text.length>50000)) return {status:400,data:{error:'Invalid snapshots'}};
-   if (body.items.length) await rows(env,'snapshots',{method:'POST',body:JSON.stringify(body.items.map(x=>({session_id:session.id,phase:x.phase,textbox:x.textbox,text:x.text,timestamp:new Date().toISOString()})))});
+   if (body.items.length) await rows(env,'snapshots',{method:'POST',body:JSON.stringify(body.items.map(x=>({session_id:session.id,phase:x.phase,textbox:x.textbox,text:x.text,client_at:Number.isFinite(Date.parse(x.timestamp))?x.timestamp:null,writing_phase:['rough','final'].includes(x.writingPhase)?x.writingPhase:null,timestamp:new Date().toISOString()})))});
    return ok({saved:true});
   }
   if (body.action === 'chat') {
@@ -115,8 +126,8 @@ export async function studyRequest(body, {env=process.env,cookie='',secure=true}
    if(!response.ok) throw new Error('Writing provider failed');
    const data=await response.json(), content=data.choices?.[0]?.message?.content;
    if(typeof content!=='string'||!content) throw new Error('Empty writing response');
-   await rows(env,`ai_requests?session_id=eq.${session.id}&request_number=eq.${slot}`,{method:'PATCH',body:JSON.stringify({response:content})});
-   return ok({content,model:data.model});
+   await rows(env,`ai_requests?session_id=eq.${session.id}&request_number=eq.${slot}`,{method:'PATCH',body:JSON.stringify({response:content,response_at:new Date().toISOString()})});
+   return ok({content,model:data.model,requestNumber:slot});
   }
   if(body.action==='finish') {
    const quiz=(await rows(env,`recall_generations?session_id=eq.${session.id}&select=story,responses`))[0];

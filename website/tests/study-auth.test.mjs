@@ -110,3 +110,19 @@ test('server chooses preview/pilot/test labels, ignores client main label, and o
  assert.ok(phaseAllowed({...session,data_kind:'preview'},'rough',700000));
  for(const kind of ['pilot','test','main'])assert.ok(!phaseAllowed({...session,data_kind:kind},'rough',700000));
 });
+
+test('interaction ingest binds session server-side, validates data and requests retry deduplication',async t=>{
+ const writes=[];
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(url.includes('/sessions?'))return Response.json([{id,expires_at:new Date(Date.now()+60000).toISOString()}]);
+  writes.push({url,options});return Response.json([]);
+ });
+ const cookie=`study_session=${issueSession(id,env)}`;
+ const event={event_id:id,stream_id:id,sequence:1,client_at:new Date().toISOString(),elapsed_ms:2,phase:'rough',type:'keydown',target:'draft',payload:{key:'a'},session_id:'forged'};
+ assert.equal((await studyRequest({action:'events',items:[event]},{env,cookie})).status,200);
+ assert.equal(JSON.parse(writes[0].options.body)[0].session_id,id);
+ assert.match(writes[0].options.headers.Prefer,/ignore-duplicates/);
+ assert.equal((await studyRequest({action:'events',items:[{...event,phase:'invalid'}]},{env,cookie})).status,400);
+ assert.equal((await studyRequest({action:'events',items:[event]},{env})).status,403);
+ assert.equal(writes.length,1);
+});

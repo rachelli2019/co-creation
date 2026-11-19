@@ -11,7 +11,7 @@ function report(key: string, message?: string) {
 }
 const labels: Record<string,string> = {
  start:'Starting the study', phase:'Starting the writing section', chat:'Contacting the AI writing assistant',
- snapshots:'Saving your progress', save_record:'Saving your responses', generate:'Preparing your quiz',
+ events:'Saving your interaction log', snapshots:'Saving your progress', save_record:'Saving your responses', generate:'Preparing your quiz',
  status:'Checking your quiz', score:'Submitting your quiz', finish:'Submitting your study',
 };
 export async function apiRequest(path: string, body: Record<string,unknown>, signal?: AbortSignal) {

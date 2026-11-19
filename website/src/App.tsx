@@ -1,3 +1,5 @@
+import {useWritingLog} from './useWritingLog';
+import {logInteraction,flushInteractions} from './interactionLog';
 import {useSessionDraft, readDraft, writeDraft} from './useSessionDraft';
 import { previewBrainstorm, outlineText } from './previewBrainstorm';
 import React, { useEffect, useRef, useState } from "react";
@@ -55,7 +57,7 @@ async function banParticipant(_prolificId: string) {
 }
 
 // ---- Snapshot Tracking System ----
-const snapshotBuffer: {session_id:string;timestamp:string;phase:string;textbox:string;text:string}[] = [];
+const snapshotBuffer: {session_id:string;timestamp:string;phase:string;textbox:string;text:string;writingPhase?:string}[] = [];
 let flushTimer: number | undefined;
 let flushing: Promise<void> | undefined;
 function flushSnapshots(): Promise<void> {
@@ -78,8 +80,8 @@ function scheduleSnapshots() {
     });
   }, 1000);
 }
-function saveSnapshot(session_id: string, phase: 'brainstorm'|'writing', textbox: 'main'|'chat', text: string) {
-  snapshotBuffer.push({session_id,timestamp:new Date().toISOString(),phase,textbox,text});
+function saveSnapshot(session_id: string, phase: 'brainstorm'|'writing', textbox: 'main'|'chat', text: string, writingPhase?: string) {
+  snapshotBuffer.push({session_id,timestamp:new Date().toISOString(),phase,textbox,text,writingPhase});
   scheduleSnapshots();
 }
 
@@ -932,7 +934,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
 
 // ---- Editor: AI Chat (placeholder) ----
 const AIChatPanel: React.FC<{ 
-  messages: {role:"user"|"assistant"; content:string}[], 
+  messages: {role:"user"|"assistant"; content:string; requestNumber?:number}[], 
   onSend: (m:string)=>void,
   draft: string,
   setDraft: (s:string)=>void,
@@ -999,7 +1001,7 @@ const AIChatPanel: React.FC<{
           <div key={i} className={"p-3 text-sm leading-relaxed break-words " + (m.role==="assistant"?"mr-3 rounded-2xl border border-blue-100 bg-blue-50":"ml-6 rounded-2xl bg-gray-100")}>
             <div className="text-xs uppercase tracking-wide opacity-60">{m.role}</div>
             <div className="whitespace-pre-wrap">{m.content}</div>
-            {m.role === 'assistant' && <button className="mt-3 text-sm border border-blue-200 rounded-lg px-3 py-1" onClick={() => onUseText(m.content)}>Add to draft</button>}
+            {m.role === 'assistant' && <button data-request-number={m.requestNumber} className="mt-3 text-sm border border-blue-200 rounded-lg px-3 py-1" onClick={() => onUseText(m.content)}>Add to draft</button>}
           </div>
         ))}
         {isLoading && (
@@ -1064,7 +1066,7 @@ const AIChatPanel: React.FC<{
   );
 };
 
-type ChatMessage = {role: "user" | "assistant"; content: string};
+type ChatMessage = {role: "user" | "assistant"; content: string; requestNumber?:number};
 export interface WritingRecord {
   roughDraft: string;
   roughCompletedAt: string;
@@ -1089,6 +1091,7 @@ export const WritingStudy: React.FC<{
   async function saveRough(artifact: NonNullable<typeof rough>) {
     setSavingRough(true); setSaveError('');
     try {
+      if (!preview) await flushInteractions(sessionId);
       if (!preview) await studyApi({action: 'phase', sessionId, phase: 'rough'});
       await recallApi({action: 'save_record', kind: 'rough_draft', preview, sessionId, payload: {
         text: artifact.text, transcript: artifact.messages, completedAt: artifact.completedAt,
@@ -1149,6 +1152,7 @@ const EditorView: React.FC<{
   useEffect(() => () => requestController.current?.abort(), []);
   const [aiMessages, setAiMessages] = useSessionDraft<ChatMessage[]>(draftKey && `${draftKey}:messages`, initialMessages);
   const [chatDraft, setChatDraft] = useSessionDraft(draftKey && `${draftKey}:prompt`, ""); // Lift chat input state
+  useWritingLog(sessionId,phase,!preview,text,chatDraft);
   const [isAILoading, setIsAILoading] = useState(false); // Track if AI is responding
   const [aiQueryCount, setAiQueryCount] = useSessionDraft(draftKey && `${draftKey}:count`, previousQueries); // Track number of AI queries sent
   const MAX_AI_QUERIES = 15; // Maximum number of AI queries allowed per session
@@ -1290,13 +1294,13 @@ const EditorView: React.FC<{
       
       // Save main text if changed
       if (currentMainText !== lastSavedRef.mainText) {
-        saveSnapshot(sessionId, 'writing', 'main', currentMainText);
+        saveSnapshot(sessionId, 'writing', 'main', currentMainText, phase);
         lastSavedRef.mainText = currentMainText;
       }
       
       // Save chat text if changed (only for AI groups)
       if (isAI && currentChatText !== lastSavedRef.chatText) {
-        saveSnapshot(sessionId, 'writing', 'chat', currentChatText);
+        saveSnapshot(sessionId, 'writing', 'chat', currentChatText, phase);
         lastSavedRef.chatText = currentChatText;
       }
     }, SNAPSHOT_INTERVAL);
@@ -1308,10 +1312,10 @@ const EditorView: React.FC<{
       const currentChatText = chatDraftRef.current;
       
       if (currentMainText !== lastSavedRef.mainText) {
-        saveSnapshot(sessionId, 'writing', 'main', currentMainText);
+        saveSnapshot(sessionId, 'writing', 'main', currentMainText, phase);
       }
       if (isAI && currentChatText !== lastSavedRef.chatText) {
-        saveSnapshot(sessionId, 'writing', 'chat', currentChatText);
+        saveSnapshot(sessionId, 'writing', 'chat', currentChatText, phase);
       }
     };
   }, [sessionId, isAI]); // Only depend on sessionId and isAI
@@ -1338,7 +1342,7 @@ const EditorView: React.FC<{
     
     // Save snapshot of the chat prompt when user submits
     if (sessionId) {
-      saveSnapshot(sessionId, 'writing', 'chat', message);
+      saveSnapshot(sessionId, 'writing', 'chat', message, phase);
     }
     
     // Add user message to chat
@@ -1353,15 +1357,18 @@ const EditorView: React.FC<{
       return;
     }
     // Call OpenAI API
+    if (!preview) logInteraction(sessionId,phase,'chat_submit','chat',{message});
     try {
       requestController.current = new AbortController();
       await studyApi({action: 'phase', sessionId, phase}, requestController.current.signal);
       const data = await studyApi({action: 'chat', sessionId, phase, message}, requestController.current.signal);
       const assistantMessage = data.content;
+      requestAnimationFrame(()=>logInteraction(sessionId,phase,'chat_response_displayed','chat',{requestNumber:data.requestNumber,content:assistantMessage}));
       
-      setAiMessages((msgs)=>[...msgs, { role:"assistant", content: assistantMessage }]);
+      setAiMessages((msgs)=>[...msgs, { role:"assistant", content: assistantMessage, requestNumber:data.requestNumber }]);
       
     } catch (error) {
+      logInteraction(sessionId,phase,'chat_error','chat',{message:error instanceof Error?error.message:'Unknown error'});
       console.error('❌ OpenAI API error:', error);
       setAiMessages((msgs)=>[...msgs, { 
         role:"assistant", 
@@ -1406,6 +1413,7 @@ const EditorView: React.FC<{
       )}
       {isAI && timeRemaining > 0 && <button className="self-start border rounded-lg px-3 py-1 mb-2 text-sm disabled:opacity-40" disabled={!text || isAILoading} onClick={() => {setChatDraft(current => [current.trimEnd(), text.trim()].filter(Boolean).join('\n')); document.getElementById('ai-prompt')?.focus();}}>Add draft to prompt</button>}
       <textarea
+        data-trace="draft"
         ref={editorRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -1795,6 +1803,16 @@ const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}
     if (loaded && sessionId && !localPreview) writeDraft(`${sessionId}:root`, {step, brainstorm, finalText, aiTranscript, attentionMeta, totalViolations, completionCode});
   }, [loaded, sessionId, localPreview, step, brainstorm, finalText, aiTranscript, attentionMeta, totalViolations, completionCode]);
 
+  // Keep retrying pending traces even after the editor unmounts for the survey.
+  useEffect(() => {
+    if (!sessionId || localPreview) return;
+    const retry = () => {void flushInteractions(sessionId).catch(() => {});};
+    retry();
+    const timer = setInterval(retry, 3000);
+    window.addEventListener('online', retry);
+    return () => {clearInterval(timer);window.removeEventListener('online', retry);};
+  }, [sessionId, localPreview]);
+
   // Reattach to the saved generation after refresh, without making a duplicate model call.
   useEffect(() => {
     if (!loaded || localPreview || step !== 5 || !sessionId || recall.status === 'ready') return;
@@ -1917,6 +1935,7 @@ const StudyApp: React.FC<{preview?: boolean; access?: AIAccess; startAt?: 1 | 4}
     }
     try {
       if (flushTimer) {clearTimeout(flushTimer); flushTimer = undefined;}
+      await flushInteractions(sessionId);
       await flushSnapshots();
       const saved = await studyApi({action: 'finish', sessionId, attentionMeta});
       setCompletionCode(saved.completionCode);
