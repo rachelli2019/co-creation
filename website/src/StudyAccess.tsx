@@ -12,7 +12,7 @@ export function startStudy(invite?: string, restartPreview = false) {
     params.delete('invite');fragment.delete('invite');
     window.history.replaceState(null,'',window.location.pathname+(params.size?'?'+params:'')+(fragment.size?'#'+fragment:''));
     return result;
-   });
+   }).catch(error=>{startPromise=undefined;throw error;});
  }
  return startPromise;
 }
@@ -38,7 +38,7 @@ export default function StudyAccess({children,walkthrough}:{children:ReactNode;w
  if(ready)return <>{testSession && <div className="bg-amber-50 p-2 text-center text-sm">{dataKind === 'pilot' ? 'Lab pilot' : 'Researcher test'} — real AI replies and data storage. Not a paid Prolific submission.</div>}{children}</>;
  return <main className="min-h-screen bg-gray-50 flex items-center justify-center p-6"><div className="bg-white border rounded-xl p-8 max-w-md w-full">
   <h1 className="text-xl font-semibold mb-4">Writing study</h1>
-  {busy?<p>Checking study access…</p>:<><p role="alert" className="mb-4">{error}</p>{!prolific&&<form onSubmit={async e=>{e.preventDefault();setBusy(true);try{const result=await startStudy(code);setDataKind(result.dataKind || '');setTestSession(result.testSession);setIsWalkthrough(result.walkthrough === true);setReady(true);}catch(e){setError(e instanceof Error?e.message:'Unable to enter.');}finally{setBusy(false);}}}>
+  {busy?<p>Checking study access…</p>:<><p role="alert" className="mb-4">{error}</p><button className="border rounded px-3 py-2 mb-4" onClick={()=>location.reload()}>Retry connection</button>{!prolific&&<form onSubmit={async e=>{e.preventDefault();setBusy(true);try{const result=await startStudy(code);setDataKind(result.dataKind || '');setTestSession(result.testSession);setIsWalkthrough(result.walkthrough === true);setReady(true);}catch(e){setError(e instanceof Error?e.message:'Unable to enter.');}finally{setBusy(false);}}}>
    <label className="block mb-2" htmlFor="invite">Invitation code</label><input id="invite" type="password" autoComplete="off" className="border rounded-lg p-2 w-full" value={code} onChange={e=>setCode(e.target.value)} required/>
    <button className="mt-4 bg-indigo-600 text-white rounded-lg px-4 py-2" type="submit">Enter study</button>
   </form>}</>}
