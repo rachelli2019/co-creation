@@ -11,7 +11,7 @@ import { recallApi } from './recallApi';
 import type { RecallState, PostTaskResponse } from './PostTaskSurvey';
 import { studyApi } from './studyApi';
 import { startStudy } from './StudyAccess';
-import { PHASE_SECONDS, aiEnabled, parseAIAccess, accessLabels } from './writingConfig';
+import { PHASE_SECONDS, aiEnabled, parseAIAccess } from './writingConfig';
 import type { AIAccess, WritingPhase } from './writingConfig';
 const STUDY_AI_ACCESS = parseAIAccess(import.meta.env.VITE_WRITING_AI_ACCESS);
 
@@ -753,7 +753,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have 10 minutes for a rough draft and 10 minutes for a final draft. Your rough draft carries into the final section. AI writing assistant access: {accessLabels[meta.group.startsWith("AI") ? (meta.aiAccess ?? STUDY_AI_ACCESS) : "neither"]}. You do not need to use the entire allotted time. After multiple periods of inactivity, we will flag your submission for manual review.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have 10 minutes for a rough draft and 10 minutes for a final draft. Your rough draft carries into the final section. You do not need to use the entire allotted time. After multiple periods of inactivity, we will flag your submission for manual review.
         </p>
       </>
     )
@@ -843,7 +843,7 @@ const PromptView: React.FC<{ meta: SessionMeta; onNext: () => void }> = ({ meta,
         </table>
         <div className="my-10"></div>
         <p className="mb-2 text-gray-500 italic">
-          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have 10 minutes for a rough draft and 10 minutes for a final draft. Your rough draft carries into the final section. AI writing assistant access: {accessLabels[meta.group.startsWith("AI") ? (meta.aiAccess ?? STUDY_AI_ACCESS) : "neither"]}. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
+          In the next step, you will be given at most 5 minutes to brainstorm and outline your story plan. Then, you will have 10 minutes for a rough draft and 10 minutes for a final draft. Your rough draft carries into the final section. You do not need to use the entire allotted time. After 30 seconds of inactivity, we will flag your submission for manual review.
         </p>
         
       </>
