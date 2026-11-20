@@ -86,13 +86,13 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
     try {
       if (!isRecall) {
         const submittedAt = new Date().toISOString();
-        await recallApi({action: 'save_record', kind: 'survey', preview, sessionId, payload: {version: '18', answers, submittedAt, pageThrough: skip}});
+        await recallApi({action: 'save_record', kind: 'survey', preview, sessionId, payload: {version: '19', answers, submittedAt, pageThrough: skip}});
         setSurveySubmittedAt(submittedAt);
         setPage(pages.length);
         return;
       }
       const scored = skip && !valid ? {status: 'skipped_preview' as const} : await recallApi({action: 'score', preview, sessionId, id: recall.status === 'ready' ? recall.data.id : '', answers: recall.status === 'ready' ? recall.data.questions.map(q => recallAnswers[q.id]) : []}) as RecallScore;
-      await onSubmit({version: '18', answers, recall: scored, pageThrough: skip, surveySubmittedAt});
+      await onSubmit({version: '19', answers, recall: scored, pageThrough: skip, surveySubmittedAt});
     } catch (e) {setError(e instanceof Error ? e.message : 'Unable to save. Please try again.');}
     finally {setSaving(false);}
   }

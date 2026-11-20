@@ -30,10 +30,8 @@ export const surveyPages: SurveyPage[] = [
     {id: 'caim_m1', text: 'I review my thinking to ensure that I’m not accepting or rejecting the AI’s recommendation too quickly.'},
     {id: 'caim_m2', text: 'When working with the AI, I check task goals every now and then to make sure we’re on track.'},
   ].map(q => ({...q, min: 1, max: 5, labels: agreement}))},
-  {title: 'Your intentions', intro: 'How much do you agree with each statement?', questions: [
+  {title: 'Outcomes and AI writing assistant', intro: 'How much do you agree with each statement?', questions: [
     agree('outcome_match', 'The outcome matched what I had aimed for in this task.'),
-  ]},
-  {title: 'Trust in the AI writing assistant', intro: 'How much do you agree with each statement?', questions: [
     agree('ai_writing_capability_1', 'The AI writing assistant is very capable of writing short stories.', true),
     agree('ai_writing_capability_2', 'The AI writing assistant has much knowledge about short story writing.', true),
     agree('ai_writing_capability_3', 'I feel very confident about the AI writing assistant’s skills.', true),
