@@ -162,3 +162,32 @@ test('rough draft can finish after five minutes but not before', async t => {
  assert.equal((await dispatch('/api/recall',body,req,env)).status,200);
  assert.equal(saved.payload.extraTimeMs,0);
 });
+
+test('personal pilot invitations bind identity and condition and resume one session', async t => {
+ const sessions=[];
+ const settings={...env,STUDY_MODE:'test',STUDY_DATA_KIND:'pilot',STUDY_ENROLLMENT_OPEN:'true',PILOT_INVITATIONS:JSON.stringify({first:{id:'LAB-QA-01',condition:'rough'},second:{id:'LAB-QA-02',condition:'final'}})};
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(options.method==='POST') {
+   if(url.endsWith('/sessions'))sessions.push(JSON.parse(options.body));
+   return Response.json([]);
+  }
+  const params=new URL(url).searchParams;
+  return Response.json(sessions.filter(s => params.has('prolific_id') ? 'eq.'+s.prolific_id===params.get('prolific_id') : 'eq.'+s.id===params.get('id')));
+ });
+ assert.equal((await studyRequest({action:'start',pilot:'missing'},{env:settings})).status,403);
+ assert.equal((await studyRequest({action:'start',pilot:'first',condition:'final'},{env:settings})).status,403);
+ assert.equal((await studyRequest({action:'start',pilot:'first'},{env:{...settings,STUDY_MODE:'prolific'}})).status,403);
+ const first=await studyRequest({action:'start',pilot:'first'},{env:settings});
+ const second=await studyRequest({action:'start',pilot:'second'},{env:settings});
+ assert.equal(first.data.prolificId,'LAB-QA-01');
+ assert.equal(first.data.aiAccess,'rough');
+ assert.equal(second.data.aiAccess,'final');
+ assert.notEqual(first.data.sessionId,second.data.sessionId);
+ assert.equal(sessions.length,2);
+ assert.ok(sessions.every(s=>s.data_kind==='pilot'));
+ const resumed=await studyRequest({action:'start',pilot:'first'},{env:settings});
+ assert.equal(resumed.data.sessionId,first.data.sessionId);
+ assert.ok(resumed.cookie);
+ assert.equal(sessions.length,2);
+ assert.equal((await studyRequest({action:'start',pilot:'second'},{env:settings,cookie:first.cookie.split(';')[0]})).status,403);
+});

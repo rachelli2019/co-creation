@@ -52,3 +52,13 @@ join public.sessions s on s.id=e.session_id
 where e.session_id='00000000-0000-0000-0000-000000000000'
 order by e.client_at,e.stream_id,e.sequence;
 ```
+
+### Participant-facing deployment addresses
+
+- Pilot: `https://creative-writing-pilot.vercel.app` (timed pilot, real backend, pilot data).
+- Main study: `https://creative-writing-study.vercel.app` (production; not ready for recruitment as of 2026-11-20).
+- Share these neutral addresses instead of generated team-named deployment URLs.
+- After each timed pilot deployment, update its alias with `vercel alias set <deployment-url> creative-writing-pilot.vercel.app --scope rachel-research`. Do not point it at a page-through preview.
+- The study domain follows production deployments; do not promote pilot settings to production.
+
+Personal pilot links use `?pilot=<opaque-token>`. Preview/main branch secret `PILOT_INVITATIONS` maps tokens to `{id, condition}`. Only timed pilot deployments accept them. The assigned ID is stored in `sessions.prolific_id` and `participants.prolific_id`; other records join through `session_id`. Reopening a valid invitation reuses its existing unexpired session, and another participant's browser session cannot be silently reused. Names and the private assignment table are retained locally in ignored `pilot-links.local/`, not published in the repository. `LAB-QA-*` IDs are verification sessions; exclude these from pilot analysis.

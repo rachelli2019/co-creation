@@ -6,7 +6,7 @@ export function startStudy(invite?: string, restartPreview = false) {
  if (!startPromise || invite !== undefined || restartPreview) {
   const params=new URLSearchParams(window.location.search);
   const fragment=new URLSearchParams(window.location.hash.slice(1));
-  startPromise=studyApi({action:'start',restartPreview,condition:params.get('condition'),noun:params.get('noun'),invite:invite ?? fragment.get('invite') ?? params.get('invite') ?? '',
+  startPromise=studyApi({action:'start',restartPreview,pilot:params.get('pilot'),condition:params.get('condition'),noun:params.get('noun'),invite:invite ?? fragment.get('invite') ?? params.get('invite') ?? '',
    prolificId:params.get('PROLIFIC_PID') || params.get('prolific_id') || params.get('pid'),
    studyId:params.get('STUDY_ID'),prolificSessionId:params.get('SESSION_ID')}).then(result=>{
     params.delete('invite');fragment.delete('invite');
