@@ -1173,7 +1173,7 @@ const EditorView: React.FC<{
   const [showTimeExpiredWarning, setShowTimeExpiredWarning] = useState(false); // Show warning when time is up but word count invalid
   const [showWordCountWarning, setShowWordCountWarning] = useState<false | '10min' | '5min' | '2min'>(false); // Word count warnings at intervals
   const timeoutHandledRef = useRef(false); // Track if we've already handled timer expiration
-  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null); // Grace period timer (3 minutes)
+  const [graceTimeRemaining, setGraceTimeRemaining] = useState<number | null>(null); // Grace period timer (5 minutes)
   const graceTimeoutHandledRef = useRef(false); // Track if we've handled grace period expiration
   
   // Update word count whenever text changes
@@ -1182,7 +1182,7 @@ const EditorView: React.FC<{
     setWordCount(words.length);
     
     // Clear regular word count warnings (but not grace period)
-    const isValidWordCount = words.length >= 250 && words.length <= 385;
+    const isValidWordCount = words.length >= 250 && words.length <= 350;
     if (isValidWordCount) {
       if (showWordCountWarning) {
         setShowWordCountWarning(false);
@@ -1221,13 +1221,13 @@ const EditorView: React.FC<{
         if (!text.trim()) {setBlankRoughError(true);return;}
         onNext(text, aiMessages); return;
       }
-      // Only force proceed if word count is valid (at least 250 words, allow slightly over 350)
-      if (wordCount >= 250 && wordCount <= 385) {
+      // Submit at the deadline only when the final draft is within 250–350 words.
+      if (wordCount >= 250 && wordCount <= 350) {
         onNext(text, aiMessages);
     } else {
         // If word count is invalid, show warning and start grace period
         setShowTimeExpiredWarning(true);
-        setGraceTimeRemaining(Math.max(0, Math.ceil((deadline + (DEV_MODE ? 30000 : 180000) - Date.now()) / 1000))); // DEV: 30 seconds, PROD: 3 minutes grace period
+        setGraceTimeRemaining(Math.max(0, Math.ceil((deadline + (DEV_MODE ? 30000 : 300000) - Date.now()) / 1000))); // DEV: 30 seconds, PROD: 5 minutes grace period
       }
     }
   }, [timeRemaining, wordCount, text, aiMessages, onNext, phase, skip]);
@@ -1236,7 +1236,7 @@ const EditorView: React.FC<{
   const graceActive = graceTimeRemaining !== null;
   React.useEffect(() => {
     if (skip || !graceActive) return;
-    return startDeadlineClock(deadline + (DEV_MODE ? 30000 : 180000), setGraceTimeRemaining);
+    return startDeadlineClock(deadline + (DEV_MODE ? 30000 : 300000), setGraceTimeRemaining);
   }, [graceActive, skip, deadline]);
 
   // Handle grace period expiration - force submit regardless of word count
@@ -1473,14 +1473,12 @@ const EditorView: React.FC<{
               disabled={
                 (TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED) ||
                 (wordCount < 250) || 
-                (graceTimeRemaining && wordCount > 385) ||
-                (!graceTimeRemaining && wordCount > 350)
+                wordCount > 350
               }
               className={`px-4 py-2 rounded-xl ${
                 (TOTAL_TIME - timeRemaining < MIN_TIME_REQUIRED) ||
                 (wordCount < 250) || 
-                (graceTimeRemaining && wordCount > 385) ||
-                (!graceTimeRemaining && wordCount > 350)
+                wordCount > 350
                   ? 'bg-gray-300 cursor-not-allowed'
                   : 'bg-black text-white'
               }`}
@@ -1489,9 +1487,7 @@ const EditorView: React.FC<{
                   ? `Please wait ${MIN_TIME_REQUIRED - (TOTAL_TIME - timeRemaining)} more seconds`
                   : wordCount < 250 
                     ? `Need ${250 - wordCount} more words` 
-                    : (graceTimeRemaining && wordCount > 385)
-                      ? `Story is too long (${wordCount} words). Grace period allows up to 385 words.`
-                    : (!graceTimeRemaining && wordCount > 350)
+                    : wordCount > 350
                       ? `Reduce to 350 words or less` 
                     : ''
               }
@@ -1518,45 +1514,45 @@ const EditorView: React.FC<{
         {/* Grace Period Warning - Highest priority */}
         {showTimeExpiredWarning && graceTimeRemaining !== null && graceTimeRemaining > 0 && (
           <div className={`p-4 border-2 rounded-xl shadow-2xl ${
-            wordCount >= 250 && wordCount <= 385 
+            wordCount >= 250 && wordCount <= 350 
               ? 'bg-green-100 border-green-500 text-green-900'
               : 'bg-orange-100 border-orange-500 text-orange-900'
           }`}>
             <div className="text-lg font-bold mb-2">
-              {wordCount >= 250 && wordCount <= 385 ? (
+              {wordCount >= 250 && wordCount <= 350 ? (
                 <>✅ Ready to Submit!</>
               ) : (
                 <>⏰ Time&apos;s Up! Grace Period</>
               )}
             </div>
             <div className="mb-2 text-sm">
-              {wordCount >= 250 && wordCount <= 385 ? (
+              {wordCount >= 250 && wordCount <= 350 ? (
                 <span className="text-green-800">Word count is valid. You can submit!</span>
               ) : (
-                <span>Story must be <span className="font-bold">250-385 words</span>.</span>
+                <span>You have an additional 5 minutes to bring your story within <span className="font-bold">250–350 words</span>.</span>
               )}
             </div>
             <div className="mb-2 text-sm">
               {wordCount < 250 && (
                 <span className="text-red-700 font-bold">⚠️ Need {250 - wordCount} more words!</span>
               )}
-              {wordCount >= 250 && wordCount <= 385 && (
+              {wordCount >= 250 && wordCount <= 350 && (
                 <span className="text-green-700 font-bold">✓ {wordCount} words</span>
               )}
-              {wordCount > 385 && (
-                <span className="text-orange-700 font-bold">Remove {wordCount - 385} words</span>
+              {wordCount > 350 && (
+                <span className="text-orange-700 font-bold">Remove {wordCount - 350} words</span>
               )}
             </div>
             <div className={`font-bold text-base ${
-              wordCount >= 250 && wordCount <= 385 ? 'text-green-700' : 'text-red-700'
+              wordCount >= 250 && wordCount <= 350 ? 'text-green-700' : 'text-red-700'
             }`}>
               ⏱️ Grace: {formatTime(graceTimeRemaining!)}
             </div>
             <div className="text-xs mt-1">
-              {wordCount >= 250 && wordCount <= 385 ? (
+              {wordCount >= 250 && wordCount <= 350 ? (
                 <span className="text-green-800">Submit anytime.</span>
               ) : (
-                <span className={wordCount >= 250 && wordCount <= 385 ? 'text-green-800' : 'text-orange-800'}>
+                <span className={wordCount >= 250 && wordCount <= 350 ? 'text-green-800' : 'text-orange-800'}>
                   Auto-submit when timer expires.
                 </span>
               )}
