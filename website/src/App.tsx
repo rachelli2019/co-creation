@@ -1111,6 +1111,7 @@ export const WritingStudy: React.FC<{
     previousQueries={rough?.messages.filter(m => m.role === 'user').length ?? 0}
     onNext={(text, messages) => {
       if (!rough) {
+        if (!text.trim()) return;
         const artifact = {text, messages, completedAt: todayISO()};
         setRough(artifact);
         void saveRough(artifact);
@@ -1142,6 +1143,7 @@ const EditorView: React.FC<{
 }> = ({ meta, brainstorm, onNext, sessionId, phase, access, preview, initialText, initialMessages, previousQueries }) => {
   const skip = usePageThrough();
   const [phaseError, setPhaseError] = useState('');
+  const [blankRoughError,setBlankRoughError]=useState(false);
   useEffect(() => {
     if (!preview) void studyApi({action: 'phase', sessionId, phase}).then(result => setDeadline(Date.parse(result.startedAt) + 600000)).catch(error => setPhaseError(error.message));
   }, [preview, sessionId, phase]);
@@ -1230,7 +1232,11 @@ const EditorView: React.FC<{
     if (!skip && timeRemaining === 0 && !timeoutHandledRef.current) {
       timeoutHandledRef.current = true; // Mark as handled
       requestController.current?.abort();
-      if (phase === 'rough') { onNext(text, aiMessages); return; }
+      if (phase === 'rough') {
+        logInteraction(sessionId,phase,'checkpoint','draft',{reason:'rough_deadline',text,blankAtDeadline:!text.trim(),deadlineAt:new Date(deadline).toISOString()});
+        if (!text.trim()) {setBlankRoughError(true);return;}
+        onNext(text, aiMessages); return;
+      }
       // Only force proceed if word count is valid (at least 250 words, allow slightly over 350)
       if (wordCount >= 250 && wordCount <= 385) {
         onNext(text, aiMessages);
@@ -1395,7 +1401,7 @@ const EditorView: React.FC<{
           <div className="text-xs text-gray-500">{phase === "rough" ? "Final draft target: 250–350 words" : "Required length: 250–350 words"}</div>
         </div>
       </div>
-      {isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE && (
+      {isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE && !(phase === 'rough' && timeRemaining === 0) && (
         <div className="mb-3 p-3 bg-blue-50 border border-blue-200 rounded-lg text-sm">
           <p className="text-blue-900 font-semibold mb-1">📝 Please start with the AI writing assistant</p>
           <p className="text-blue-800">Use the AI writing assistant panel on the right to generate a first draft or story components before editing here.</p>
@@ -1419,10 +1425,10 @@ const EditorView: React.FC<{
         onChange={(e) => setText(e.target.value)}
         rows={18}
         className="w-full flex-1 min-h-0 resize-none overflow-y-auto border rounded-xl p-3 focus:outline-none focus:ring"
-        placeholder={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE ? "Please use the AI writing assistant first..." : "Write here... (250-350 words)"}
+        placeholder={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE && !(phase === 'rough' && timeRemaining === 0) ? "Please use the AI writing assistant first..." : "Write here... (250-350 words)"}
         spellCheck="true"
-        disabled={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE}
-        style={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
+        disabled={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE && !(phase === 'rough' && timeRemaining === 0)}
+        style={isAI && !hasUsedAI && previousQueries === 0 && !DEV_MODE && !(phase === 'rough' && timeRemaining === 0) ? { backgroundColor: '#f9fafb', cursor: 'not-allowed' } : {}}
       />
       <div className="mt-3 flex justify-end items-center text-xs text-gray-500">
         <div>Use Ctrl+C / Ctrl+V (Cmd+C / Cmd+V on Mac) to copy and paste.</div>
@@ -1432,14 +1438,14 @@ const EditorView: React.FC<{
 
   return (
     <Shell
-      onPreviewNext={() => onNext(text, aiMessages)}
+      onPreviewNext={() => {if(phase === 'rough' && !text.trim()){setBlankRoughError(true);editorRef.current?.focus();return;}onNext(text, aiMessages);}}
       wide
       title={phase === "rough" ? "Step 2 · Rough draft" : "Step 3 · Final draft"}
       footer={
         <div className="flex flex-col items-center gap-4">
           {phase === 'rough' ? (
             <div className="text-sm text-gray-600 text-center">
-              <p>Develop your rough draft. The final-draft section begins when this timer ends.</p>
+              {timeRemaining === 0 ? <><p>Please add your rough draft before continuing. Your final-draft timer has not started.</p><button disabled={!text.trim()} className="mt-3 rounded-lg bg-black px-4 py-2 text-white disabled:bg-gray-300" onClick={()=>onNext(text,aiMessages)}>Continue to final draft</button></> : <p>Develop your rough draft. The final-draft section begins when this timer ends.</p>}
             </div>
           ) : showConfirmation ? (
             <div className="flex flex-col items-center gap-3">
@@ -1521,6 +1527,10 @@ const EditorView: React.FC<{
         {phase === 'rough' && <p className="mt-3"><strong>You will then have an additional 10 minutes to polish and refine your rough draft into a final draft.</strong></p>}
         {isAI && (phase === 'rough' || access === 'final') && <p className="mt-4">You have access to an AI writing assistant to help you with the writing process.</p>}
       </div>
+      {phase === 'rough' && !text.trim() && (blankRoughError || (!skip && timeRemaining <= 120)) && <div role="alert" className={`mb-4 rounded-xl border p-4 ${timeRemaining <= 30 || blankRoughError ? 'border-red-300 bg-red-50 text-red-900' : 'border-amber-300 bg-amber-50 text-amber-900'}`}>
+        <strong>{timeRemaining === 0 ? 'Please add your rough draft before continuing.' : 'Your story editor is still empty.'}</strong>
+        <p>{timeRemaining === 0 ? 'Please use this extra time to enter your rough draft or add text from the AI writing assistant. Your final-draft timer will start after your rough draft is saved.' : 'Please write your rough draft or add text from the AI writing assistant before this section ends.'}</p>
+      </div>}
       {/* Timer and Warnings - Fixed to top-right */}
       <div className="fixed top-4 right-4 z-40 flex flex-col items-end gap-3 max-w-md">
         {/* Grace Period Warning - Highest priority */}
@@ -1656,7 +1666,7 @@ const EditorView: React.FC<{
         </>
       )}
 
-      {isAI && timeRemaining > 0 ? (
+      {isAI ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] gap-6">
           <div className="h-[clamp(560px,75vh,720px)] min-w-0 border rounded-2xl p-4">{EditorBox}</div>
           <div className="h-[clamp(560px,75vh,720px)] min-w-0 border rounded-2xl p-4">

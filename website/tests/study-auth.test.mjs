@@ -126,3 +126,20 @@ test('interaction ingest binds session server-side, validates data and requests 
  assert.equal((await studyRequest({action:'events',items:[event]},{env})).status,403);
  assert.equal(writes.length,1);
 });
+
+test('rough draft save rejects whitespace and records time beyond the deadline',async t=>{
+ const {dispatch}=await import('../server/http.mjs');
+ let saved;
+ t.mock.method(globalThis,'fetch',async(url,options)=>{
+  if(url.includes('/sessions?'))return Response.json([{id,rough_started_at:new Date(Date.now()-610000).toISOString(),expires_at:new Date(Date.now()+60000).toISOString()}]);
+  if(options.method==='POST')saved=JSON.parse(options.body);
+  return Response.json([]);
+ });
+ const req={headers:{cookie:`study_session=${issueSession(id,env)}`}};
+ const body={action:'save_record',kind:'rough_draft',sessionId:id,payload:{text:' \n ',transcript:[]}};
+ assert.equal((await dispatch('/api/recall',body,req,env)).status,400);
+ assert.equal(saved,undefined);
+ body.payload.text='A beginning.';
+ assert.equal((await dispatch('/api/recall',body,req,env)).status,200);
+ assert.ok(saved.payload.extraTimeMs>=10000);
+});
