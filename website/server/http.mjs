@@ -22,7 +22,7 @@ export async function dispatch(path,body,req,env,allowPreview=false) {
  if(!session || session.finished_at || body?.preview) return {status:403,data:{error:'A valid study session is required'}};
  if(body.action==='save_record' && body.kind==='rough_draft') {
   if(typeof body.payload?.text !== 'string' || !body.payload.text.trim()) return {status:400,data:{error:'Please add your rough draft before continuing.'}};
-  if(!session.rough_started_at || (session.data_kind !== 'preview' && Date.now()<Date.parse(session.rough_started_at)+600000)) return {status:403,data:{error:'The rough draft section has not ended yet.'}};
+  if(!session.rough_started_at || (session.data_kind !== 'preview' && Date.now()<Date.parse(session.rough_started_at)+300000)) return {status:403,data:{error:'Please spend at least 5 minutes on your rough draft.'}};
   body.payload={...body.payload,aiAccess:session.ai_access,phaseSeconds:600,extraTimeMs:Math.max(0,Date.now()-Date.parse(session.rough_started_at)-600000),completedAt:new Date().toISOString()};
  }
  if(body.action==='generate' && (!session.final_started_at || (session.data_kind !== 'preview' && Date.now()<Date.parse(session.final_started_at)+300000))) return {status:403,data:{error:'Please complete the final draft section first.'}};
