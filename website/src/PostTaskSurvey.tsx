@@ -2,6 +2,7 @@ import {useSessionDraft} from './useSessionDraft';
 import { useEffect, useState } from 'react';
 import { recallApi } from './recallApi';
 import { surveyPages } from './surveyQuestions';
+import { orderSurveyPages } from './surveyOrder';
 import type { SurveyQuestion } from './surveyQuestions';
 import { usePageThrough } from './previewMode';
 import type { AIAccess } from './writingConfig';
@@ -11,7 +12,7 @@ export interface RecallQuestion {id: string; category: string; question: string;
 export interface RecallSet {id: string; questions: RecallQuestion[]; simulated: boolean}
 export type RecallState = {status: 'loading'} | {status: 'error'; message: string} | {status: 'ready'; data: RecallSet};
 export interface RecallScore {generationId: string; answers: number[]; correct: boolean[]; score: number; total: number; bonusCents: number; simulated: boolean}
-export interface PostTaskResponse {version: string; answers: SurveyAnswers; recall: RecallScore | {status: 'skipped_preview'}; pageThrough: boolean; surveySubmittedAt: string | null}
+export interface PostTaskResponse {version: string; answers: SurveyAnswers; recall: RecallScore | {status: 'skipped_preview'}; pageThrough: boolean; surveySubmittedAt: string | null; pageOrder: string[]; questionOrder: string[]}
 
 function Question({question: q, value, setValue, number}: {question: SurveyQuestion; value: SurveyAnswer | undefined; setValue: (value: SurveyAnswer) => void; number: number | string}) {
   const scalarValue = Array.isArray(value) ? '' : value ?? '';
@@ -50,8 +51,10 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
 }) {
   const skip = usePageThrough();
   const splitStrategy = hasAI && aiAccess === 'both';
+  const [localOrderSeed] = useState(() => crypto.randomUUID());
+  const orderedPages = orderSurveyPages(surveyPages, sessionId ?? localOrderSeed);
   let questionNumber = 0;
-  const pages = surveyPages.map(p => ({...p, questions: p.questions.filter(q => !q.aiOnly || hasAI).flatMap(q => {
+  const pages = orderedPages.map(p => ({...p, questions: p.questions.filter(q => !q.aiOnly || hasAI).flatMap(q => {
     const number = ++questionNumber;
     if (q.id !== 'ai_strategy') return [{...q, number: String(number)}];
     const phases = aiAccess === 'both' ? ['rough', 'final'] : [aiAccess];
@@ -61,6 +64,8 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
       number: splitStrategy ? `${number}${i === 0 ? 'a' : 'b'}` : String(number),
     }));
   })})).filter(p => p.questions.length);
+  const pageOrder = pages.map(p => p.id);
+  const questionOrder = pages.flatMap(p => p.questions.map(q => q.id));
   const draftKey = !preview && sessionId ? `${sessionId}:survey` : null;
   const [page, setPage] = useSessionDraft(draftKey && `${draftKey}:page`, 0);
   useEffect(() => { window.scrollTo(0, 0); }, [page]);
@@ -86,13 +91,13 @@ export default function PostTaskSurvey({hasAI, aiAccess, recall, preview, sessio
     try {
       if (!isRecall) {
         const submittedAt = new Date().toISOString();
-        await recallApi({action: 'save_record', kind: 'survey', preview, sessionId, payload: {version: '19', answers, submittedAt, pageThrough: skip}});
+        await recallApi({action: 'save_record', kind: 'survey', preview, sessionId, payload: {version: '20', pageOrder, questionOrder, answers, submittedAt, pageThrough: skip}});
         setSurveySubmittedAt(submittedAt);
         setPage(pages.length);
         return;
       }
       const scored = skip && !valid ? {status: 'skipped_preview' as const} : await recallApi({action: 'score', preview, sessionId, id: recall.status === 'ready' ? recall.data.id : '', answers: recall.status === 'ready' ? recall.data.questions.map(q => recallAnswers[q.id]) : []}) as RecallScore;
-      await onSubmit({version: '19', answers, recall: scored, pageThrough: skip, surveySubmittedAt});
+      await onSubmit({version: '20', pageOrder, questionOrder, answers, recall: scored, pageThrough: skip, surveySubmittedAt});
     } catch (e) {setError(e instanceof Error ? e.message : 'Unable to save. Please try again.');}
     finally {setSaving(false);}
   }
