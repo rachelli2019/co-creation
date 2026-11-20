@@ -1,3 +1,4 @@
+import {startDeadlineClock} from './deadlineClock';
 import {useWritingLog} from './useWritingLog';
 import {logInteraction,flushInteractions} from './interactionLog';
 import {useSessionDraft, readDraft, writeDraft} from './useSessionDraft';
@@ -1189,43 +1190,26 @@ const EditorView: React.FC<{
     }
   }, [text, showWordCountWarning]);
 
-  // Timer countdown effect
+  // Keep ticking even when rounding produces the same value or typing rerenders.
   React.useEffect(() => {
-    if (!skip && timeRemaining > 0) {
-      const timer = setTimeout(() => {
-        setTimeRemaining(() => {
-          const newTime = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
-          
-          // Show reminders at 5:00 and 1:00
-          if (newTime === 300) {
-            setShowReminder('5min');
-            setTimeout(() => setShowReminder(false), 10000);
-          } else if (newTime === 60) {
-            setShowReminder('1min');
-            setTimeout(() => setShowReminder(false), 10000);
-          }
-          
-          // Show word count warnings at 10:00, 5:00, and 2:00 if word count is invalid
-          const isWordCountInvalid = phase === 'final' && (wordCount < 250 || wordCount > 350);
-          if (isWordCountInvalid) {
-            if (newTime === 600) { // 10 minutes
-              setShowWordCountWarning('10min');
-              setTimeout(() => setShowWordCountWarning(false), 30000); // Show for 30 seconds
-            } else if (newTime === 300) { // 5 minutes
-              setShowWordCountWarning('5min');
-              setTimeout(() => setShowWordCountWarning(false), 30000);
-            } else if (newTime === 120) { // 2 minutes
-              setShowWordCountWarning('2min');
-              setTimeout(() => setShowWordCountWarning(false), 30000);
-            }
-          }
-          
-          return newTime;
-        });
-      }, 1000);
-      return () => clearTimeout(timer);
+    if (skip) return;
+    return startDeadlineClock(deadline, setTimeRemaining);
+  }, [deadline, skip]);
+
+  React.useEffect(() => {
+    if (skip) return;
+    if (timeRemaining === 300 || timeRemaining === 60) {
+      setShowReminder(timeRemaining === 300 ? '5min' : '1min');
+      setTimeout(() => setShowReminder(false), 10000);
     }
-  }, [timeRemaining, wordCount, phase, deadline, skip]);
+    if (phase === 'final' && (wordCount < 250 || wordCount > 350)) {
+      const warning = timeRemaining === 600 ? '10min' : timeRemaining === 300 ? '5min' : timeRemaining === 120 ? '2min' : false;
+      if (warning) {
+        setShowWordCountWarning(warning);
+        setTimeout(() => setShowWordCountWarning(false), 30000);
+      }
+    }
+  }, [timeRemaining, wordCount, phase, skip]);
 
   // Handle timer expiration (separate effect to avoid re-triggering)
   React.useEffect(() => {
@@ -1248,15 +1232,12 @@ const EditorView: React.FC<{
     }
   }, [timeRemaining, wordCount, text, aiMessages, onNext, phase, skip]);
 
-  // Grace period timer countdown
+  // Use the same deadline clock for the final draft's grace period.
+  const graceActive = graceTimeRemaining !== null;
   React.useEffect(() => {
-    if (!skip && graceTimeRemaining !== null && graceTimeRemaining > 0) {
-      const timer = setTimeout(() => {
-        setGraceTimeRemaining(Math.max(0, Math.ceil((deadline + (DEV_MODE ? 30000 : 180000) - Date.now()) / 1000)));
-      }, 1000);
-      return () => clearTimeout(timer);
-    }
-  }, [graceTimeRemaining, skip, deadline]);
+    if (skip || !graceActive) return;
+    return startDeadlineClock(deadline + (DEV_MODE ? 30000 : 180000), setGraceTimeRemaining);
+  }, [graceActive, skip, deadline]);
 
   // Handle grace period expiration - force submit regardless of word count
   React.useEffect(() => {
