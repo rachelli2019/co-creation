@@ -248,7 +248,7 @@ const InstructionsView: React.FC<{ meta: SessionMeta; sessionId?: string | null;
         <p className="leading-relaxed">
           Welcome! You'll complete a short creative writing task for a research study. {meta.group.includes("SELF") ? 
             "Our goal is to understand how people write stories without the use of an AI writing assistant, in particular how people brainstorm, write first drafts, and refine their stories."
-            : "Our goal is to understand how people write stories with the use of an AI writing assistant, in particular how it might contribute to less diverse stories."
+            : "Our goal is to understand how people use AI for creative writing."
           } Please read the instructions carefully.
         </p>
         
@@ -604,7 +604,7 @@ onChange={(e) => set_quick_ideas(e.target.value)}
 
 rows={3}
         className="w-full border rounded-xl p-3 focus:outline-none focus:ring"
-placeholder="Jot down as many ideas for a story you have."
+placeholder="Jot down as many ideas as possible for your story."
 />
 </div>
 
@@ -1030,6 +1030,12 @@ const AIChatPanel: React.FC<{
           placeholder={isLimitReached ? "Query limit reached" : "Message the AI writing assistant…"}
           value={draft}
           onChange={(e)=>setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+              e.preventDefault();
+              if (!e.repeat) handleSendClick();
+            }
+          }}
           rows={1}
           disabled={isLoading || isLimitReached}
         />
@@ -1045,7 +1051,7 @@ const AIChatPanel: React.FC<{
           </button>
         </div>
       </div>
-      <p className="mt-2 text-xs text-gray-500">Enter starts a new line. Use the arrow to send.</p>
+      <p className="mt-2 text-xs text-gray-500">Press Enter to send. Press Shift+Enter for a new line.</p>
 
       {/* AI Prompting Tips - Collapsible */}
       <details className="mt-3 shrink-0 max-h-32 overflow-y-auto p-3 bg-gray-50 rounded-lg text-xs text-gray-700">
